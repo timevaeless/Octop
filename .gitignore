@@ -104,3 +104,8 @@ scripts/dev-local-link.sh
 docs/superpowers/
 scripts/lh_image_install_octop_tencentos.sh
 .worktrees/
+
+.workbuddy
+.workbuddy-ai
+.workbuddy.pytest-tmp*
+.pytest-tmp*

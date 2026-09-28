@@ -16,6 +16,7 @@ from harness_gateway.manager import ChannelManager
 from harness_gateway.models import ChannelSubject
 
 from octop.i18n import channel_probe_incomplete, channel_runtime_reason, tr
+from octop.infra.agents.executor import AgentExecutor, InProcessExecutor
 from octop.infra.db.repos.channels import ChannelRow
 from octop.infra.db.repos.sessions import SessionRow
 from octop.infra.errors import ErrorCode, OctopError
@@ -104,8 +105,19 @@ class Gateway:
         repos: RepoBundle,
         trajectory_service: Any | None = None,
         history_archive: Any | None = None,
+        executor: AgentExecutor | None = None,
+        im_active: Callable[[], bool] | None = None,
+        channel_notify: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._agent_manager = agent_manager
+        self._executor: AgentExecutor = executor or InProcessExecutor(agent_manager)
+        # Stage 3 multi-replica gate: when provided and returning False, IM
+        # channel pollers are NOT started on this node (leader-only). The
+        # leader runner re-runs ``reload_channels`` on gain/loss transitions.
+        self._im_active = im_active
+        # Cluster plan D2: fired after every channel write so the node running
+        # the IM pollers (the leader) reloads from the DB. None in local mode.
+        self._channel_notify = channel_notify
         self._repos = repos
         self._trajectory_service = trajectory_service
         self._history_archive = history_archive
@@ -123,6 +135,16 @@ class Gateway:
         self._cli_channel: CliChannel | None = None
         self._runtime_status: dict[str, ChannelRuntimeStatus] = {}
         self._history_backfill = HistoryBackfillQueue()
+
+    @property
+    def cancel_executor(self) -> AgentExecutor:
+        """Executor whose ``cancel_stream`` reaches wherever the turn runs.
+
+        In remote mode this is the ``RemoteExecutor`` (cross-process notify);
+        local mode it delegates to the in-process registry. Slash ``/stop``
+        routes through this instead of the local registry (review P1-3).
+        """
+        return self._executor
 
     def replace_repos(self, repos: RepoBundle) -> None:
         """Point channel/thread persistence at a rebound control-plane pool."""
@@ -219,6 +241,7 @@ class Gateway:
     async def boot(self) -> None:
         self._processor = GlobalProcessor(
             agent_manager=self._agent_manager,
+            executor=self._executor,
             thread_registry=self._thread_registry,
             audit_repo=self._repos.audit_repo,
             agent_repo=self._repos.agent_repo,
@@ -351,6 +374,7 @@ class Gateway:
             await self._safe_register_channel(row)
         else:
             self._set_runtime_status(row.channel_id, connected=False, reason="disabled")
+        await self._publish_channel_change()
         return row
 
     async def update_channel(
@@ -375,12 +399,14 @@ class Gateway:
             await self._safe_register_channel(row)
         elif row is not None:
             self._set_runtime_status(channel_id, connected=False, reason="disabled")
+        await self._publish_channel_change()
         return row
 
     async def delete_channel(self, channel_id: str) -> None:
         self._repos.channel_repo.delete(channel_id)
         await self._unregister(channel_id)
         self._runtime_status.pop(channel_id, None)
+        await self._publish_channel_change()
 
     def require_session(self, agent_id: str, session_key: str) -> SessionRow:
         """Return a session after validating its owning agent."""
@@ -522,7 +548,7 @@ class Gateway:
         if not thread_id:
             return
 
-        self._agent_manager.cancel_stream(agent_id.strip(), thread_id)
+        self._executor.cancel_stream(agent_id.strip(), thread_id)
         logger.info(
             "preempt cancel: agent=%s thread=%s cmd=/%s",
             agent_id,
@@ -640,7 +666,31 @@ class Gateway:
             updated_at=int(time.time()),
         )
 
+    async def _publish_channel_change(self) -> None:
+        """Notify the poller-running node that channel rows changed (D2).
+
+        Best-effort: the DB row is already committed and the watcher-side
+        reload is idempotent, so a failed notify only costs latency. This
+        node's own registration already happened above, so a cluster-less
+        deployment is unaffected (``_channel_notify`` is None locally).
+        """
+        if self._channel_notify is None:
+            return
+        try:
+            await self._channel_notify()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("channel-change notify failed; ignoring")
+
     async def _safe_register_channel(self, row: ChannelRow) -> None:
+        if self._im_active is not None and not self._im_active():
+            # Not the cluster leader: leave the poller unstarted; the DB row
+            # is untouched and the leader node owns registration.
+            self._set_runtime_status(
+                row.channel_id, connected=False, reason="standby", detail="not leader"
+            )
+            return
         try:
             await self._register_channel(row)
         except Exception as exc:

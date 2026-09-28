@@ -21,6 +21,7 @@ from harness_gateway.models import (
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from octop.i18n.domains.stream import format_stream_error
+from octop.infra.agents.executor import AgentExecutor, InProcessExecutor
 from octop.infra.agents.profile import parse_config_json
 from octop.infra.agents.providers.reasoning import reasoning_request_parameters
 from octop.infra.agents.teams import is_team_agent
@@ -131,6 +132,7 @@ class GlobalProcessor:
         self,
         *,
         agent_manager: AgentManager,
+        executor: AgentExecutor | None = None,
         thread_registry: ThreadRegistry,
         audit_repo: AuditRepo,
         agent_repo: AgentRepo,
@@ -148,6 +150,7 @@ class GlobalProcessor:
         history_archive: Any | None = None,
     ) -> None:
         self._agent_manager = agent_manager
+        self._executor: AgentExecutor = executor or InProcessExecutor(agent_manager)
         self._thread_registry = thread_registry
         self._audit_repo = audit_repo
         self._agent_repo = agent_repo
@@ -1015,7 +1018,7 @@ class GlobalProcessor:
         usage_tracker = UsageTracker()
 
         try:
-            async for chunk in self._agent_manager.stream(agent_id, request):
+            async for chunk in self._executor.stream(agent_id, request):
                 usage_tracker.observe(chunk)
                 history_tracker.observe(chunk)
                 from octop.infra.history.recorder import flush_tracker  # noqa: PLC0415
@@ -1113,7 +1116,7 @@ class GlobalProcessor:
         traj_on = self._agent_trajectory_enabled(agent_id)
         team_host = is_team_agent(self._agent_manager.get_row(agent_id))
         try:
-            async for chunk in self._agent_manager.resume_hitl(
+            async for chunk in self._executor.resume_hitl(
                 agent_id,
                 thread_id,
                 decisions,

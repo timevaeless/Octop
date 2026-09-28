@@ -21,12 +21,30 @@ from octop.api.routers.chat.turn import (
     prepare_dashboard_turn,
     turn_has_content,
 )
+from octop.infra.agents.executor import cancel_turn
 from octop.infra.errors import OctopError
 from octop.infra.gateway.ws import WS_CHANNEL_ID
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _maybe_relay_remote_turn(server: Any, hub: Any, thread_id: str) -> None:
+    """Continue an in-flight remote turn cross-node over WebSocket (D3).
+
+    Pluggability contract (§8): the relay implementation lives in the
+    cluster-only ``octop.api.cluster`` package and is imported lazily here,
+    guarded by the remote executor's presence — the community edition
+    (no remote executor) never touches the cluster import.
+    """
+    runtime = server.app_runtime
+    executor = getattr(runtime, "remote_executor", None) if runtime is not None else None
+    if executor is None or not hasattr(executor, "attach"):
+        return
+    from octop.api.cluster.relay import maybe_relay_remote_turn  # noqa: PLC0415
+
+    await maybe_relay_remote_turn(hub, thread_id, executor)
 
 
 @router.websocket("/agents/{agent_id}/chat/ws")
@@ -104,6 +122,11 @@ async def dashboard_chat_ws(
                     )
                     continue
                 hub.subscribe(thread_id, connection_id)
+                # D3: before reporting status, check the cross-node job
+                # mapping — a turn started on another api node may still be
+                # in flight; if so its chunks are relayed into the hub and
+                # the status below reports active.
+                await _maybe_relay_remote_turn(server, hub, thread_id)
                 await send_frame(
                     {
                         "type": "turn_status",
@@ -124,7 +147,7 @@ async def dashboard_chat_ws(
                         {"type": "error", "message": f"thread {thread_id!r} not found"},
                     )
                     continue
-                server.app_runtime.agent_registry.cancel_stream(agent_id, thread_id)
+                cancel_turn(server.app_runtime, agent_id, thread_id)
                 continue
 
             if msg_type != "user_turn":

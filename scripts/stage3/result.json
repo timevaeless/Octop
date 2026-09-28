@@ -1,0 +1,48 @@
+{
+  "load": {
+    "streams": 40,
+    "worker_concurrency_total": 16,
+    "wall_seconds": 5.3,
+    "throughput_streams_per_min": 453.8,
+    "first_chunk_ms_p50": 1255.9,
+    "first_chunk_ms_p95": 3253.7,
+    "total_ms_p50": 3063.2,
+    "total_ms_p95": 5115.7,
+    "pg_connections_max": 47,
+    "pg_conns_by_source": {
+      "stage3-w1": 17,
+      "stage3-w2": 17,
+      "stage3-exec": 13
+    },
+    "executor_conns_max": 13,
+    "hub_connections": 1,
+    "all_completed": true,
+    "all_markers_echoed": true,
+    "all_have_chunks": true
+  },
+  "prune": {
+    "deleted": 2,
+    "old_left": 0,
+    "new_left": 1
+  },
+  "leader": {
+    "a_became_leader": true,
+    "b_was_follower": true,
+    "b_took_over_after_a_stopped": true,
+    "a_service_started": true,
+    "b_service_started": true
+  },
+  "checks": {
+    "load: all streams completed": true,
+    "load: all markers echoed": true,
+    "load: all have chunks": true,
+    "load: hub holds 1 connection": true,
+    "load: executor-side conns bounded (<25, independent of 40 streams)": true,
+    "prune: expired rows deleted": true,
+    "prune: fresh rows kept": true,
+    "leader: follower stayed standby": true,
+    "leader: failover worked": true,
+    "leader: both services ran": true
+  },
+  "verdict": "PASS"
+}

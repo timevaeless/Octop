@@ -277,6 +277,14 @@ def build_app(server: OctopServer) -> FastAPI:
             ],
         )
 
+    # Pluggability contract (cluster plan §8): the cluster-only API surface
+    # (D3 SSE turn-attach) is mounted exclusively in remote execution mode —
+    # the community edition never imports octop.api.cluster.
+    if cfg is not None and cfg.execution_mode == "remote":
+        from octop.api.cluster import router as cluster_router  # noqa: PLC0415
+
+        _mount_routers(app, [_RouterMount(cluster_router, "/api", ["chat"])])
+
     if enable_api_docs:
 
         @app.get("/api/docs", include_in_schema=False)

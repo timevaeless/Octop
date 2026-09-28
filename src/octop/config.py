@@ -143,6 +143,12 @@ class OctopConfig:
     capabilities: CapabilitiesConfig = field(default_factory=CapabilitiesConfig)
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
     browser_idle_timeout_minutes: int = DEFAULT_BROWSER_IDLE_TIMEOUT_MINUTES
+    # Microservice scaling stage 2: "local" = in-process execution (default,
+    # behavior identical to the original single-instance build); "remote" =
+    # defer turn execution to octop agent-worker processes via the queue.
+    execution_mode: str = "local"
+    # PostgreSQL DSN for the turn queue (procrastinate) — required for remote.
+    queue_dsn: str | None = None
 
     @property
     def max_upload_bytes(self) -> int:
@@ -152,6 +158,9 @@ class OctopConfig:
 def _defaults_for_file() -> dict[str, Any]:
     data = asdict(OctopConfig())
     data.pop("database_in_file", None)
+    # The queue DSN may hold credentials; it is env-only (OCTOP_QUEUE_DSN),
+    # never persisted to config.json.
+    data.pop("queue_dsn", None)
     db = dict(data["database"])
     db.pop("password", None)
     db.pop("url", None)
@@ -484,6 +493,14 @@ def load_config(path: Path) -> OctopConfig:
         merged["enable_api_docs"] = _coerce_bool(
             "OCTOP_ENABLE_API_DOCS", v, bool(merged["enable_api_docs"])
         )
+    if v := os.environ.get("OCTOP_EXEC_MODE"):
+        mode = str(v).strip().lower()
+        if mode not in ("local", "remote"):
+            logger.warning("OCTOP_EXEC_MODE must be local or remote; got %r", v)
+        else:
+            merged["execution_mode"] = mode
+    if v := os.environ.get("OCTOP_QUEUE_DSN"):
+        merged["queue_dsn"] = v
     if v := os.environ.get("OCTOP_REQUIRE_SETUP_PASSWORD"):
         merged["require_setup_password"] = _coerce_bool(
             "OCTOP_REQUIRE_SETUP_PASSWORD", v, bool(merged["require_setup_password"])
@@ -623,4 +640,6 @@ def load_config(path: Path) -> OctopConfig:
                 )
             ),
         ),
+        execution_mode=str(merged.get("execution_mode") or "local"),
+        queue_dsn=merged.get("queue_dsn"),
     )

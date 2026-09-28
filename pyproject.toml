@@ -37,6 +37,7 @@ dependencies = [
     "playwright>=1.40",
     "psycopg[binary]>=3.2",
     "langgraph-checkpoint-postgres>=2.0",
+    "procrastinate>=3.8,<4",
     "mcp>=1.9,<2",
     "pillow>=10.0",
     "pypdf>=5.0",
@@ -130,6 +131,7 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
 "src/octop/api/**" = ["B008"]
+"src/octop/mcp_catalog/**" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

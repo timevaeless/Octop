@@ -85,7 +85,6 @@ This starts a **standalone** `OctopServer` (reads `~/.octop`), boots the agent, 
 Pin the default agent for convenience:
 
 ```bash
-octop user login --username you
 # set default_agent in ~/.octop/cli_state.json, or:
 octop --agent main acp
 ```

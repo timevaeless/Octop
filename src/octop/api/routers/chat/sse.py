@@ -5,20 +5,11 @@ from __future__ import annotations
 import json
 from typing import Any
 
+# Canonical implementation lives in infra (D11): the worker-side remote-turn
+# encoder needs the same fallback and infra must not import api.
+from octop.infra.utils.json_serialize import json_chunk_default
 
-def json_chunk_default(obj: Any) -> Any:
-    """Fallback serializer for types json.dumps can't handle natively."""
-    if hasattr(obj, "model_dump"):
-        try:
-            return obj.model_dump()
-        except Exception:
-            pass
-    if hasattr(obj, "dict"):
-        try:
-            return obj.dict()
-        except Exception:
-            pass
-    return repr(obj)
+__all__ = ["format_sse", "json_chunk_default"]
 
 
 def format_sse(event: str, data: Any) -> str:

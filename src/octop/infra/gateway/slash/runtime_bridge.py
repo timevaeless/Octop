@@ -32,7 +32,12 @@ async def build_runtime_ctx(cmd: SlashCommand, ctx: SlashCtx) -> RuntimeSlashCtx
     _get_thread_model = None
     _set_thread_model = None
     _clear_thread_model = None
-    if ctx.agent_manager is not None:
+    # Review P1-3: prefer the gateway executor's cancel — in remote mode the
+    # turn runs on a worker process, so cancelling via the local agent
+    # registry would be a silent no-op.
+    if ctx.cancel_stream is not None:
+        cancel_stream = ctx.cancel_stream
+    elif ctx.agent_manager is not None:
         am = ctx.agent_manager
 
         def _cancel(agent_id: str, tid: str) -> None:

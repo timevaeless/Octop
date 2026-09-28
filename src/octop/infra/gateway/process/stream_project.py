@@ -10,6 +10,7 @@ from harness_gateway.media import MediaBackend
 from harness_gateway.models import MessageEvent
 
 from octop.i18n import channel_tool_hint_end, channel_tool_hint_start, tool_display_name
+from octop.infra.agents.executor import AgentExecutor, InProcessExecutor
 from octop.infra.gateway.hitl.format import format_hitl_card
 from octop.infra.gateway.media.tool_media import media_events_from_tool_result
 from octop.infra.gateway.process.agent_resolve import harness_workspace_for_agent
@@ -236,6 +237,7 @@ async def project_stream(
     agent_id: str,
     request: dict[str, Any],
     *,
+    executor: AgentExecutor | None = None,
     media_backend: MediaBackend | None = None,
     usage_tracker: UsageTracker | None = None,
     history_tracker: TurnHistoryTracker | None = None,
@@ -245,8 +247,9 @@ async def project_stream(
     hitl_ctx: HitlStreamContext | None = None,
 ) -> AsyncIterator[MessageEvent]:
     del media_backend  # IM tool media uses agent.backend directly
+    runner = executor or InProcessExecutor(agent_manager)
     async for ev in _project_chunks(
-        agent_manager.stream(agent_id, request),
+        runner.stream(agent_id, request),
         agent_manager=agent_manager,
         agent_id=agent_id,
         locale=locale,
@@ -265,6 +268,7 @@ async def project_resume_stream(
     thread_id: str,
     decisions: list[dict[str, Any]],
     *,
+    executor: AgentExecutor | None = None,
     usage_tracker: UsageTracker | None = None,
     history_tracker: TurnHistoryTracker | None = None,
     locale: str | Locale = DEFAULT_LOCALE,
@@ -272,8 +276,9 @@ async def project_resume_stream(
     hitl_coordinator: HitlChannelCoordinator | None = None,
     hitl_ctx: HitlStreamContext | None = None,
 ) -> AsyncIterator[MessageEvent]:
+    runner = executor or InProcessExecutor(agent_manager)
     async for ev in _project_chunks(
-        agent_manager.resume_hitl(agent_id, thread_id, decisions),
+        runner.resume_hitl(agent_id, thread_id, decisions),
         agent_manager=agent_manager,
         agent_id=agent_id,
         locale=locale,

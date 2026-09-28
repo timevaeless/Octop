@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from octop.infra.db.pool import DatabasePool

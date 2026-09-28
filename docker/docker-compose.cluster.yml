@@ -1,0 +1,128 @@
+# =============================================================================
+# Octop — 集群版 compose（阶段 3：水平扩展拓扑）
+#
+# 拓扑：lb(nginx) + api×N（选主跑后台单例）+ agent-worker×N（纯执行）+
+#       PostgreSQL(pgvector) + MinIO
+#
+# 用法（仓库根目录）:
+#   docker build -f docker/Dockerfile -t octop:latest .        # 先构建镜像
+#   docker compose -f docker/docker-compose.cluster.yml up -d \
+#       --scale api=2 --scale worker=2
+#
+# 机制依据：
+#   - 角色划分 / 队列回传：docs/deployment-stage2.md
+#   - 选主（advisory lock）与容量数字：docs/deployment-stage3.md
+#   - workspace 指向 MinIO：控制台 backend 配置（docs/deployment-minio-pgvector.md）。
+#     集群模式【必须先配 MinIO】：api 与 worker 都落 MinIO 后附件才跨节点可见。
+#     octop_workspace 共享卷只是"未配 MinIO 时的单宿主机兜底"——api 与 worker
+#     需在同一宿主机上共享它（api 也挂载，见下），跨宿主机不成立。
+#
+# 注意：
+#   - api 无 container_name / 固定端口（便于 --scale）；外部访问只走 lb。
+#   - LB 的 SSE 配置见 docker/cluster-lb.conf（关缓冲 + 长超时）。
+#   - 生产 PG 请换主备 + PITR（docs/production-ha.md），MinIO 请换
+#     ≥4 节点纠删码分布式模式（docs/deployment-minio-pgvector.md §2）。
+# =============================================================================
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${OCTOP_PG_USER:-octop}
+      POSTGRES_PASSWORD: ${OCTOP_PG_PASSWORD:-octop}
+      POSTGRES_DB: ${OCTOP_PG_DB:-octop}
+    volumes:
+      - octop_pgdata:/var/lib/postgresql/data
+      - ./postgres/init-vector.sql:/docker-entrypoint-initdb.d/01-vector.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-octop-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-octop-minio-secret}
+    ports:
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - octop_minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  api:
+    image: octop:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8088"
+    environment:
+      - HOME=/data
+      - OCTOP_BIND_HOST=0.0.0.0
+      - OCTOP_PORT=8088
+      - OCTOP_EXEC_MODE=remote
+      - OCTOP_QUEUE_DSN=postgresql://${OCTOP_PG_USER:-octop}:${OCTOP_PG_PASSWORD:-octop}@postgres:5432/${OCTOP_PG_DB:-octop}
+      - OCTOP_DATABASE_URL=postgresql://${OCTOP_PG_USER:-octop}:${OCTOP_PG_PASSWORD:-octop}@postgres:5432/${OCTOP_PG_DB:-octop}
+      - OCTOP_DEFAULT_PASSWORD=${OCTOP_DEFAULT_PASSWORD:-}
+    volumes:
+      # 未配 MinIO 的单宿主机兜底：api 上传的附件与 worker 可见（同一卷）。
+      # 跨宿主机/多机部署必须改用 MinIO（控制台 backend 配置）。
+      - octop_workspace:/data/.octop/workspace
+    # readiness（集群计划 D9）：DB 连通 + 迁移版本匹配才视为「能服务」；
+    # LB 的被动健康检查 + 外部编排据此摘除/重启故障 api。
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/api/health/ready', timeout=4)\"",
+        ]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  worker:
+    image: octop:latest
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["octop", "agent-worker", "--concurrency", "${OCTOP_WORKER_CONCURRENCY:-8}"]
+    environment:
+      - HOME=/data
+      - OCTOP_EXEC_MODE=remote
+      - OCTOP_QUEUE_DSN=postgresql://${OCTOP_PG_USER:-octop}:${OCTOP_PG_PASSWORD:-octop}@postgres:5432/${OCTOP_PG_DB:-octop}
+      - OCTOP_DATABASE_URL=postgresql://${OCTOP_PG_USER:-octop}:${OCTOP_PG_PASSWORD:-octop}@postgres:5432/${OCTOP_PG_DB:-octop}
+    volumes:
+      - octop_workspace:/data/.octop/workspace
+
+  lb:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${OCTOP_PORT:-8088}:80"
+    volumes:
+      - ./cluster-lb.conf:/etc/nginx/conf.d/default.conf:ro
+
+volumes:
+  octop_pgdata:
+  octop_minio:
+  octop_workspace:

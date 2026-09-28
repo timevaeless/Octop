@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import gzip
+import inspect
 import logging
 import os
 import shutil
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
@@ -41,6 +43,36 @@ logger = logging.getLogger(__name__)
 # Default 100 MiB per active log file before size-triggered rollover (in addition to daily).
 DEFAULT_LOG_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
+
+
+class _StandaloneBackgroundGate:
+    """Core fallback for the cluster module's ``BackgroundGate``.
+
+    Pluggability contract (cluster plan §8): a community build without
+    ``octop.infra.cluster`` must boot. This gate reproduces only the
+    standalone behaviour of the cluster gate — routed singletons start
+    immediately on this node (``enabled=True``) or never (``enabled=False``,
+    worker role) — with no leadership machinery.
+    """
+
+    def __init__(self, *, enabled: bool = True) -> None:
+        self._enabled = enabled
+
+    async def route(
+        self,
+        name: str,
+        start: Callable[..., Any],
+        stop: Callable[..., Any],
+    ) -> None:
+        if not self._enabled:
+            logger.debug("background singleton %r skipped: node runs no background tasks", name)
+            return
+        result = start()
+        if inspect.isawaitable(result):
+            await result
+
+    def start(self) -> None:
+        return None
 
 
 class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -216,6 +248,9 @@ class AppRuntime:
     proactive_scheduler: ProactiveCareScheduler
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
+    remote_executor: Any | None = None
+    leader_runner: Any | None = None
+    channel_change_notifier: Any | None = None
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
@@ -240,8 +275,24 @@ class AppRuntime:
 
 
 class OctopServer:
-    def __init__(self, home: Path | None = None) -> None:
+    def __init__(self, home: Path | None = None, *, leader: bool | None = None) -> None:
         self._home = home or PathLayout.from_env().root
+        # Stage 3 cluster roles: agent-worker nodes pass leader=False — they
+        # never contend for the advisory lock, so background singletons
+        # (cron / IM / proactive / knowledge recovery) stay on api nodes.
+        # Plan D4 (stage-0 multi-replica): N full `octop run` replicas behind
+        # an LB must run background singletons on exactly one node. Explicit
+        # ``leader=`` wins; otherwise OCTOP_LEADER decides (unset/"1" =
+        # leader, "0"/"false"/"no"/"off" = follower), so the single-node
+        # default behaviour is unchanged.
+        if leader is None:
+            leader = os.environ.get("OCTOP_LEADER", "1").strip().lower() not in {
+                "0",
+                "false",
+                "no",
+                "off",
+            }
+        self._leader_enabled = leader
         self.paths = PathLayout(self._home)
         self.config: OctopConfig | None = None
         self.services: SharedServices | None = None
@@ -370,6 +421,59 @@ class OctopServer:
 
         configure_browser_idle_timeout(config.browser_idle_timeout_minutes)
 
+        # Microservice scaling stage 2: "remote" defers turn execution to
+        # octop agent-worker processes (docs/microservice-scaling-1000.md §4).
+        remote_executor: Any | None = None
+        leader_runner: Any | None = None
+        channel_change_notifier: Any | None = None
+        channel_change_watcher: Any | None = None
+        if config.execution_mode == "remote":
+            # Cluster module import — guarded lazy per the pluggability
+            # contract (§8): the community edition never executes this branch.
+            from octop.infra.cluster.remote import RemoteExecutor  # noqa: PLC0415
+
+            if not config.queue_dsn:
+                raise ValueError(
+                    "execution_mode=remote requires a queue DSN "
+                    "(set OCTOP_QUEUE_DSN or database.url-style queue config)"
+                )
+            queue_dsn = config.queue_dsn
+            remote_executor = RemoteExecutor(dsn=config.queue_dsn)
+            # Stage 3: multi-replica api nodes elect one leader (session-level
+            # advisory lock) to run background singletons exactly once.
+            # Worker-role nodes (leader=False) are pure executors and never
+            # contend for the lock.
+            if self._leader_enabled:
+                from octop.infra.cluster.leader import LeaderRunner  # noqa: PLC0415
+
+                leader_runner = LeaderRunner(config.queue_dsn)
+            # Cluster plan D2: channel writes on any api node must reach the
+            # node running the IM pollers. Publisher goes on every leader-role
+            # remote node; the LISTEN watcher is routed through the gate below.
+            from octop.infra.cluster.channel_bus import ChannelChangeNotifier  # noqa: PLC0415
+
+            channel_change_notifier = ChannelChangeNotifier(queue_dsn)
+            gateway_channel_notify = (
+                channel_change_notifier.publish if self._leader_enabled else None
+            )
+        else:
+            gateway_channel_notify = None
+
+        # Stage 3 single routing seam for every background singleton: standalone
+        # nodes run them inline; cluster mode attaches them to the leader runner;
+        # worker-role nodes (leader=False) run NO background tasks at all.
+        # All clustering logic lives in the isolated octop.infra.cluster package
+        # so this file's upstream-merge surface stays a handful of gate calls.
+        # Pluggability contract (§8): the import is guarded — a community build
+        # without the cluster module boots on the inline fallback below.
+        gate: Any
+        try:
+            from octop.infra.cluster.leader import BackgroundGate  # noqa: PLC0415
+
+            gate = BackgroundGate(leader_runner, enabled=self._leader_enabled)
+        except ImportError:  # cluster module absent: community single-node
+            gate = _StandaloneBackgroundGate(enabled=self._leader_enabled)
+
         registry = AgentManager(
             repos=self.services.repos,
             paths=self.paths,
@@ -416,8 +520,21 @@ class OctopServer:
             repos=self.services.repos,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
+            executor=remote_executor,
+            im_active=(leader_runner.im_active if leader_runner is not None else None),
+            channel_notify=gateway_channel_notify,
         )
         await gateway.boot()
+
+        # D2 watcher: created here so it can bind gateway.reload_channels_from_db.
+        if channel_change_notifier is not None and self._leader_enabled:
+            from octop.infra.cluster.channel_bus import (  # noqa: PLC0415
+                ChannelChangeWatcher,
+            )
+
+            channel_change_watcher = ChannelChangeWatcher(
+                queue_dsn, on_change=gateway.reload_channels_from_db
+            )
 
         from octop import __version__  # noqa: PLC0415
 
@@ -435,6 +552,7 @@ class OctopServer:
             gateway=gateway,
             agent_manager=registry,
             repos=self.services.repos,
+            executor=remote_executor,
         )
         cron_mgr = CronManager(
             gateway=gateway,
@@ -442,7 +560,9 @@ class OctopServer:
             repos=self.services.repos,
             timezone=config.default_timezone,
         )
-        await cron_mgr.boot()
+        # Stage 3: the cron scheduler loop is a cluster singleton. In remote
+        # mode only the leader runs it; followers keep HTTP create/list.
+        await gate.route("cron-scheduler", cron_mgr.boot, cron_mgr.shutdown)
 
         from octop.infra.setup.tls.renewal import install_auto_renewal_job
 
@@ -474,12 +594,32 @@ class OctopServer:
         )
         registry.set_proactive_scheduler(proactive_scheduler)
 
-        await registry.boot()
+        # Remote api-role nodes never execute turns: skip the O(agent total)
+        # harness pre-start so api memory stays flat while agents scale out.
+        # Worker-role nodes (remote + leader=False) are the ONLY executors —
+        # they must pre-start every agent (review P2-7: warm-up at boot, not
+        # on the user's first turn).
+        await registry.boot(prestart_agents=remote_executor is None or not self._leader_enabled)
         await gateway.refresh_media_backends()
 
         user_mgr = UserManager(self.services)
         await user_mgr.boot()
-        await proactive_scheduler.start_all()
+        await gate.route(
+            "proactive-care",
+            proactive_scheduler.start_all,
+            proactive_scheduler.shutdown,
+        )
+        await gate.route(
+            "gateway-im-channels",
+            gateway.reload_channels_from_db,
+            gateway.reload_channels_from_db,
+        )
+        if channel_change_watcher is not None:
+            await gate.route(
+                "channel-change-watcher",
+                channel_change_watcher.open,
+                channel_change_watcher.aclose,
+            )
 
         self.app_runtime = AppRuntime(
             agent_registry=registry,
@@ -489,10 +629,18 @@ class OctopServer:
             proactive_scheduler=proactive_scheduler,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
+            remote_executor=remote_executor,
+            leader_runner=leader_runner,
+            channel_change_notifier=channel_change_notifier,
         )
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
-        resume_pending_index_jobs(self.services)
+        await gate.route(
+            "knowledge-recovery",
+            lambda: resume_pending_index_jobs(self.services),
+            lambda: None,
+        )
+        gate.start()
 
     def _emit_wizard_password(self, *, user_count: int) -> None:
         config = self.config
@@ -530,10 +678,20 @@ class OctopServer:
         try:
             if self.app_runtime is not None:
                 rt = self.app_runtime
-                await rt.proactive_scheduler.shutdown()
-                await rt.cron_manager.shutdown()
+                if rt.leader_runner is not None:
+                    # Stops attached singletons exactly once
+                    # (cron/proactive/IM/knowledge); the direct shutdowns of
+                    # those services are skipped in cluster mode.
+                    await rt.leader_runner.stop()
+                else:
+                    await rt.proactive_scheduler.shutdown()
+                    await rt.cron_manager.shutdown()
                 await rt.gateway.shutdown()
                 await rt.agent_registry.shutdown()
+                if rt.remote_executor is not None:
+                    await rt.remote_executor.aclose()
+                if rt.channel_change_notifier is not None:
+                    await rt.channel_change_notifier.aclose()
                 await rt.user_manager.shutdown_all()
                 if rt.history_archive is not None:
                     rt.history_archive.store.close()

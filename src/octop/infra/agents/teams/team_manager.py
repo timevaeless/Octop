@@ -30,6 +30,7 @@ from harness_agent.teams.util import (
 from langchain_core.messages import AIMessage, HumanMessage
 
 from octop.i18n import tr
+from octop.infra.agents.executor import AgentExecutor, InProcessExecutor
 from octop.infra.agents.teams.service import is_team_agent
 from octop.infra.gateway.process.history_projection import (
     live_message_inputs,
@@ -90,8 +91,10 @@ class TeamManager:
         user_repo: UserRepo,
         thread_message_repo: Any | None = None,
         gateway: Any | None = None,
+        executor: AgentExecutor | None = None,
     ) -> None:
         self._agent_manager = agent_manager
+        self._executor: AgentExecutor = executor or InProcessExecutor(agent_manager)
         self._thread_registry = thread_registry
         self._user_repo = user_repo
         self._thread_message_repo = thread_message_repo
@@ -293,7 +296,7 @@ class TeamManager:
         reasoning_parts: list[str] = []
         relayed_visible = False
         try:
-            async for chunk in self._agent_manager.stream(speaker_id, payload):
+            async for chunk in self._executor.stream(speaker_id, payload):
                 if not isinstance(chunk, dict):
                     continue
                 kind = str(chunk.get("type") or "")

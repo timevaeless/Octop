@@ -462,7 +462,13 @@ class AgentManager:
     def teams(self) -> Any:
         return self._teams
 
-    async def boot(self) -> None:
+    async def boot(self, *, prestart_agents: bool = True) -> None:
+        """Boot the harness manager and (by default) pre-start every agent.
+
+        ``prestart_agents=False`` is used by remote api-role nodes: turn
+        execution happens on agent-worker processes, so the O(agent total)
+        harness pre-load is skipped (memory stays flat regardless of fleet).
+        """
         self._tool_guard_rules.ensure_seeded()
         providers = self._providers.build_harness_configs()
         self._harness_manager = HarnessAgentManager(
@@ -483,6 +489,9 @@ class AgentManager:
             self._harness_manager.set_security_policy(self._security.harness_policy())
 
         rows = self._repos.agent_repo.list_all(include_disabled=False)
+        if not prestart_agents:
+            logger.info("prestart_agents=False (remote api role); agents load on demand")
+            return
         for row in rows:
             if row.last_state == "stopped":
                 continue

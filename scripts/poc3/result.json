@@ -1,0 +1,49 @@
+{
+  "verdict": "PASS",
+  "results": {
+    "1_mid_stream_cancel": {
+      "cancel_report": {
+        "ok": true,
+        "role": "cancel",
+        "thread": "T-CANCEL",
+        "n_chunks_received": 15,
+        "cancelled_at_ms": 213.4,
+        "elapsed_ms": 213.5,
+        "clean_end": true
+      },
+      "cancel_rc": 0,
+      "verify": {
+        "ok": true,
+        "role": "verify",
+        "thread": "T-CANCEL",
+        "history_len": 1,
+        "expect_marker": "CANCEL-TEST-GAMMA-55",
+        "found": true
+      },
+      "verify_rc": 0,
+      "ok": true
+    },
+    "2_disconnect_replay": {
+      "produced_rows_total": 121,
+      "received_count": 121,
+      "received_unique": 121,
+      "no_gap_no_dup": true,
+      "disconnect_events": [
+        {
+          "event": "disconnect",
+          "died_after_rows": 7,
+          "last_seq": 7,
+          "expected_resume_seq": 8
+        },
+        {
+          "event": "disconnect",
+          "died_after_rows": 16,
+          "last_seq": 23,
+          "expected_resume_seq": 24
+        }
+      ],
+      "resume_ok": true,
+      "ok": true
+    }
+  }
+}

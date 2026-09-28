@@ -1,0 +1,47 @@
+{
+  "dsn": "/postgres?host=<repo>/.workbuddy/stage2-pgdata-080041",
+  "phases": {
+    "1_stream_e2e": {
+      "n_chunks": 171,
+      "elapsed_ms": 11698.6,
+      "reply_head": "FAKE-REPLY :: Please remember this codeword: CODEWORD-BANANA-42. Just acknowledg",
+      "marker_echoed": true,
+      "all_dicts": true
+    },
+    "2_call_e2e": {
+      "result_keys": [
+        "messages"
+      ],
+      "result_head": "{\"messages\": [{\"content\": \"Call-phase marker: CALL-PHASE-NEBULA. Acknowledge.\", \"additional_kwargs\": {\"checkpoint_ts\": 1",
+      "marker_echoed": true
+    },
+    "3_parallel_threads": {
+      "p1": {
+        "marker_echoed": true,
+        "n_chunks": 419
+      },
+      "p2": {
+        "marker_echoed": true,
+        "n_chunks": 419
+      }
+    },
+    "4_same_thread_serialization": {
+      "turn_a_end_ms": 18916.1,
+      "turn_b_end_ms": 39434.7,
+      "gap_ms": 20518.6,
+      "serialized": true
+    },
+    "5_cancel_e2e": {
+      "n_chunks_before_cancel": 11,
+      "cancelled_at_ms": 66.6,
+      "total_elapsed_ms": 71.1,
+      "cancel_effective": true,
+      "worker_healthy_after": true
+    },
+    "6_error_propagation": {
+      "raised": true,
+      "message_head": "ValueError: unknown agent 'no-such-agent' on this worker"
+    }
+  },
+  "verdict": "PASS"
+}

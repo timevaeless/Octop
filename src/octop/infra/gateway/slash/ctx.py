@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +33,11 @@ class SlashCtx:
     usage_repo: UsageRepo | None = None
     user_repo: UserRepo | None = None
     agent_manager: AgentManager | None = None
+    # Cross-process cancel surface (review P1-3): in remote mode the turn runs
+    # on a worker, so /stop must route through the gateway's executor (which
+    # is a RemoteExecutor) instead of the local agent registry. Filled by
+    # ``build_slash_ctx`` from the gateway; callers fall back to agent_manager.
+    cancel_stream: Callable[[str, str], None] | None = None
     cron_manager: CronManager | None = None
     paths: PathLayout | None = None
     gateway_channels: list[dict[str, str]] = field(default_factory=list)
@@ -108,6 +114,10 @@ def build_slash_ctx(
 ) -> SlashCtx:
     """Build SlashCtx for GlobalProcessor or other gateway entry points."""
     meta = getattr(gateway, "slash_meta", None) if gateway is not None else None
+    # Prefer the gateway executor for cancels: in remote mode it is a
+    # RemoteExecutor whose cancel reaches the worker process (review P1-3).
+    cancel_executor = getattr(gateway, "cancel_executor", None) if gateway is not None else None
+    cancel_stream = getattr(cancel_executor, "cancel_stream", None)
     gw_channels: list[dict[str, str]] = []
     if gateway is not None:
         gw_channels = [
@@ -159,6 +169,7 @@ def build_slash_ctx(
         usage_repo=usage_repo,
         user_repo=user_repo,
         agent_manager=agent_manager,
+        cancel_stream=cancel_stream,
         cron_manager=cron_manager,
         paths=paths,
         gateway_channels=gw_channels,

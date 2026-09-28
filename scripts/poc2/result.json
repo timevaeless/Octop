@@ -1,0 +1,36 @@
+{
+  "verdict": "PASS",
+  "target": "p95 <= 100ms (flush scenarios)",
+  "results": [
+    {
+      "scenario": "A_notify_per_token_30tps",
+      "n": 301,
+      "p50_ms": 0.66,
+      "p95_ms": 0.84,
+      "p99_ms": 1.29,
+      "max_ms": 5.03,
+      "mean_ms": 0.7,
+      "ok": true
+    },
+    {
+      "scenario": "B_flush50ms_30tps",
+      "n": 301,
+      "p50_ms": 3.65,
+      "p95_ms": 36.32,
+      "p99_ms": 36.92,
+      "max_ms": 70.94,
+      "mean_ms": 18.05,
+      "ok": true
+    },
+    {
+      "scenario": "C_flush50ms_100tps",
+      "n": 601,
+      "p50_ms": 23.01,
+      "p95_ms": 51.34,
+      "p99_ms": 53.09,
+      "max_ms": 53.97,
+      "mean_ms": 25.61,
+      "ok": true
+    }
+  ]
+}

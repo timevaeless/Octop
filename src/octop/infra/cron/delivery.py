@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from langchain_core.messages import AIMessage, HumanMessage
 
 from octop.i18n import tr
+from octop.infra.agents.executor import AgentExecutor, InProcessExecutor
 from octop.infra.cron.task_type import CronTaskType, normalize_cron_task_type
 from octop.infra.gateway.process import build_harness_request
 from octop.infra.gateway.process.history_projection import TurnHistoryTracker, message_inputs
@@ -55,9 +56,11 @@ class CronDeliveryService:
         gateway: Gateway,
         agent_manager: AgentManager,
         repos: RepoBundle,
+        executor: AgentExecutor | None = None,
     ) -> None:
         self._gateway = gateway
         self._agent_manager = agent_manager
+        self._executor: AgentExecutor = executor or InProcessExecutor(agent_manager)
         self._repos = repos
 
     def replace_repos(self, repos: RepoBundle) -> None:
@@ -140,7 +143,7 @@ class CronDeliveryService:
         parts: list[str] = []
         interaction_required = False
         try:
-            async for chunk in self._agent_manager.stream(command.agent_id, request):
+            async for chunk in self._executor.stream(command.agent_id, request):
                 tracker.observe(chunk)
                 usage.observe(chunk)
                 if chunk.get("type") in ("token", "delta"):

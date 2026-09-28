@@ -7,6 +7,7 @@ Each file is ``NNN_description.sql`` (SQLite) or ``NNN_description.pg.sql``
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -18,6 +19,27 @@ from octop.infra.utils.ulid import new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
+
+#: Session-level advisory lock serializing control-plane migrations cluster-wide
+#: (cluster plan D5). Distinct from the queue-schema lock (918273645, remote.py),
+#: worker warmup (918273646) and leader election (918273647). Held on one
+#: dedicated pool connection for the whole run; concurrent ``--scale`` boots
+#: otherwise race on repeated object creation, and
+#: ``_ensure_published_experts_schema`` may rebuild tables from scratch.
+MIGRATION_LOCK_KEY = 918273648
+
+#: How often a node still waiting for the migration lock logs that it is
+#: waiting (cluster review D5): the original blocking ``pg_advisory_lock``
+#: made a booting second node look dead — zero log output, no bound.
+MIGRATION_LOCK_LOG_INTERVAL_SECONDS = 5.0
+#: Give up loudly if the lock stays unavailable this long. A legitimate
+#: first-boot migration finishes well inside the window; hitting it means
+#: the lock holder is likely stuck and restarting into the same wall again
+#: will not help.
+MIGRATION_LOCK_MAX_WAIT_SECONDS = 600.0
+_MIGRATION_LOCK_POLL_SECONDS = 0.5
+
+logger = logging.getLogger(__name__)
 
 
 def _split_pg_sql(sql: str) -> list[str]:
@@ -72,6 +94,25 @@ def _current_version(db: DatabasePool) -> int:
             return int(version)
         except Exception:
             return 0
+
+
+def current_schema_version(db: DatabasePool) -> int:
+    """Strict read of the applied schema version (cluster plan D9).
+
+    Unlike :func:`_current_version` this propagates connection errors, so
+    readiness probes can tell "database unreachable" from "version 0".
+    """
+    with db.connect() as conn:
+        row = conn.execute("SELECT version FROM _schema_version").fetchone()
+        if row is None:
+            return 0
+        version = row["version"] if isinstance(row, Mapping) else row[0]
+        return int(version)
+
+
+def latest_schema_version(dialect: str) -> int:
+    """Highest migration version shipped with this build (cluster plan D9)."""
+    return _max_discovered_version(dialect)
 
 
 def _table_columns(db: DatabasePool, table: str) -> set[str]:
@@ -1709,6 +1750,66 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
 
 
 def run_migrations(db: DatabasePool) -> None:
+    """Apply pending migrations; on PostgreSQL, cluster-wide serialized.
+
+    SQLite keeps the historical single-writer behaviour (WAL) and runs the
+    body directly. On PostgreSQL the whole body runs under a session-level
+    advisory lock held on one dedicated pool connection, so several nodes
+    booting concurrently (``docker compose --scale``) take turns instead of
+    racing on repeated object creation / table rebuilds. The lock is taken
+    with try-lock polling (see :func:`_acquire_migration_lock`), not a
+    blocking ``pg_advisory_lock``, so waiters log their wait and an
+    unreasonably long wait fails loudly instead of hanging the boot.
+    """
+    if db.dialect != "postgresql":
+        _run_migrations_body(db)
+        return
+    with db.connect() as lock_conn:
+        _acquire_migration_lock(lock_conn)
+        try:
+            _run_migrations_body(db)
+        finally:
+            lock_conn.execute("SELECT pg_advisory_unlock(?)", (MIGRATION_LOCK_KEY,))
+
+
+def _acquire_migration_lock(lock_conn: Any) -> None:
+    """Take the migration advisory lock with try-lock polling (review D5).
+
+    The original blocking ``pg_advisory_lock`` serialized concurrent boots
+    correctly but silently. Polling ``pg_try_advisory_lock`` keeps the same
+    mutual exclusion while adding two properties a cluster operator needs:
+    waiting nodes log that they are waiting (so "is my node stuck?" has an
+    answer in the logs), and the wait is bounded — a node whose lock holder
+    died mid-migration or is wedged fails its boot with a clear error
+    instead of hanging forever.
+    """
+    started = time.monotonic()
+    next_log = started
+    while True:
+        cur = lock_conn.execute("SELECT pg_try_advisory_lock(?)", (MIGRATION_LOCK_KEY,))
+        row = cur.fetchone()
+        if row is not None and bool(row[0]):
+            waited = time.monotonic() - started
+            if waited >= _MIGRATION_LOCK_POLL_SECONDS:
+                logger.info("migration lock acquired after %.1fs wait", waited)
+            return
+        now = time.monotonic()
+        if now - started >= MIGRATION_LOCK_MAX_WAIT_SECONDS:
+            raise TimeoutError(
+                f"could not acquire the migration lock ({MIGRATION_LOCK_KEY}) within "
+                f"{MIGRATION_LOCK_MAX_WAIT_SECONDS:.0f}s; the holding node is likely "
+                "stuck mid-migration — inspect its logs before restarting this one"
+            )
+        if now >= next_log:
+            logger.warning(
+                "waiting for the migration lock (another node is migrating); waited %.0fs so far",
+                now - started,
+            )
+            next_log = now + MIGRATION_LOCK_LOG_INTERVAL_SECONDS
+        time.sleep(_MIGRATION_LOCK_POLL_SECONDS)
+
+
+def _run_migrations_body(db: DatabasePool) -> None:
     if db.dialect == "sqlite":
         _repair_legacy_schema(db)
     for version, path in _discover(db.dialect):
