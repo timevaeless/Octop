@@ -1,7 +1,7 @@
-"""Tenant-scoped filesystem layout (T2-3, pluggable module).
+"""Workspace path plane (T2-3, pluggable module).
 
-User convention 2026-09-26 (extract, don't weave): the whole tenant path
-plane lives here as a mixin. The only upstream touch point is one line in
+User convention 2026-09-26 (extract, don't weave): the path mixin lives here
+as a module. The only upstream touch point is one line in
 ``infra/utils/paths.py`` — the import and the mixin base of ``PathLayout``:
 
     from octop.infra.utils.tenant_paths import TenantPathLayoutMixin
@@ -13,13 +13,19 @@ Deleting that module together with those two lines restores the community
 flat layout verbatim (``agents/<id>``, ``knowledge/<id>``,
 ``published_experts/<id>``).
 
-Layout
-------
-Tenant-scoped content lives under ``orgs/<org_id>/...``, platform-shared
-content under ``shared/...``.  Legacy flat dirs keep working through
-adopt-legacy resolution (:func:`_scoped_dir`): an existing install keeps
-reading its old directories without a bulk data move, new content is
-created scoped.
+Layout (simplified 2026-10-08, user decision)
+---------------------------------------------
+All content lives under ``shared/...`` regardless of the row's ``org_id``;
+the legacy flat dirs (``agents/<id>`` etc.) keep working through
+adopt-legacy resolution (:func:`_scoped_dir`) for community-layout installs.
+
+Tenant visibility is enforced purely at the DB layer — every tenant-scoped
+table (``published_experts``, ``agents``, ``knowledge_bases``, ...) carries
+the ``tenant_isolation`` RLS policy, and no tenant-side process ever reads
+these directories directly (agent file tools are rooted at each agent's own
+workspace).  Attribution changes are therefore a pure DB update with no
+filesystem counterpart: re-attributing a published expert no longer
+requires relocating its snapshot (2026-10-08 "未找到。" incident).
 """
 
 from __future__ import annotations
@@ -29,18 +35,12 @@ from pathlib import Path
 __all__ = ["TenantPathLayoutMixin"]
 
 
-def _safe_segment(value: str) -> str:
-    """Filesystem-safe path segment for tenant ids (org ids are ULIDs today)."""
-    seg = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in value)[:80]
-    return seg or "_"
-
-
 def _scoped_dir(scoped: Path, legacy: Path) -> Path:
-    """Adopt-legacy resolution for the T2-3 tenant layout.
+    """Adopt-legacy resolution for the community flat layout.
 
-    Prefer the org-scoped path; keep using the legacy flat path when it
+    Prefer the ``shared/`` path; keep using the legacy flat path when it
     already exists (existing installs keep working without a bulk data
-    move); create the scoped path otherwise.
+    move); create the ``shared/`` path otherwise.
     """
     if scoped.is_dir():
         return scoped
@@ -50,7 +50,7 @@ def _scoped_dir(scoped: Path, legacy: Path) -> Path:
 
 
 class TenantPathLayoutMixin:
-    """Tenant path plane mixed into the community :class:`PathLayout`.
+    """Path plane mixed into the community :class:`PathLayout`.
 
     Reads ``self.root`` plus the legacy ``agents_dir`` /
     ``published_experts_dir`` / ``knowledge_dir`` properties from the host
@@ -59,36 +59,23 @@ class TenantPathLayoutMixin:
 
     @property
     def shared_dir(self) -> Path:
-        """Platform-wide content every tenant may read: ``~/.octop/shared/``."""
+        """Platform-wide content root: ``~/.octop/shared/``."""
         return self.root / "shared"
 
-    @property
-    def orgs_dir(self) -> Path:
-        """Tenant-scoped content root: ``~/.octop/orgs/``."""
-        return self.root / "orgs"
-
-    def org_dir(self, org_id: str) -> Path:
-        return self.orgs_dir / _safe_segment(org_id)
-
     def agent_workspace(self, agent_id: str, org_id: str | None = None) -> Path:
-        """Agent workspace, tenant-scoped when the agent belongs to an org.
+        """Agent workspace: ``shared/agents/<agent_id>``.
 
-        Tenant agent: ``orgs/<org>/agents/<agent_id>``; platform agent:
-        ``shared/agents/<agent_id>``.  Either falls back to the legacy
-        ``agents/<agent_id>`` when that directory already exists.
+        ``org_id`` is accepted for call-site compatibility and ignored —
+        attribution never moves directories (see module docstring).  Falls
+        back to the legacy ``agents/<agent_id>`` when that already exists.
         """
-        if org_id:
-            return _scoped_dir(
-                self.org_dir(org_id) / "agents" / agent_id,
-                self.agents_dir / agent_id,
-            )
         return _scoped_dir(
             self.shared_dir / "agents" / agent_id,
             self.agents_dir / agent_id,
         )
 
     def ensure_agent_workspace(self, agent_id: str, org_id: str | None = None) -> Path:
-        """Agent workspace (tenant-scoped), mkdir -p."""
+        """Agent workspace, mkdir -p."""
         out = self.agent_workspace(agent_id, org_id=org_id)
         out.mkdir(parents=True, exist_ok=True)
         return out
@@ -96,35 +83,26 @@ class TenantPathLayoutMixin:
     def published_expert_snapshot_dir(
         self, expert_id: str, org_id: str | None = None
     ) -> Path:
-        """Published expert snapshot dir, tenant-scoped when the row has an org.
+        """Published expert snapshot dir: ``shared/published_experts/<id>``.
 
-        Tenant expert: ``orgs/<org>/published_experts/<id>``; platform-wide
-        expert (``org_id IS NULL``): ``shared/published_experts/<id>`` —
-        the shared area every tenant may read.  Both adopt the legacy flat
-        ``published_experts/<id>`` when it already exists.
+        ``org_id`` is accepted for call-site compatibility and ignored —
+        who may see (and install) a published expert is decided by the
+        ``tenant_isolation`` RLS policy on the row, never by the directory
+        layout.  Falls back to the legacy flat ``published_experts/<id>``
+        when that already exists.
         """
-        if org_id:
-            return _scoped_dir(
-                self.org_dir(org_id) / "published_experts" / expert_id,
-                self.published_experts_dir / expert_id,
-            )
         return _scoped_dir(
             self.shared_dir / "published_experts" / expert_id,
             self.published_experts_dir / expert_id,
         )
 
     def knowledge_base_dir(self, kb_id: str, org_id: str | None = None) -> Path:
-        """Knowledge base file dir, tenant-scoped when the KB row has an org.
+        """Knowledge base file dir: ``shared/knowledge/<kb_id>``.
 
-        Tenant KB: ``orgs/<org>/knowledge/<kb_id>``; platform KB:
-        ``shared/knowledge/<kb_id>``.  Both adopt the legacy flat
-        ``knowledge/<kb_id>`` when it already exists.
+        ``org_id`` is accepted for call-site compatibility and ignored
+        (see module docstring).  Falls back to the legacy flat
+        ``knowledge/<kb_id>`` when that already exists.
         """
-        if org_id:
-            return _scoped_dir(
-                self.org_dir(org_id) / "knowledge" / kb_id,
-                self.knowledge_dir / kb_id,
-            )
         return _scoped_dir(
             self.shared_dir / "knowledge" / kb_id,
             self.knowledge_dir / kb_id,

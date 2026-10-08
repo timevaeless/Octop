@@ -180,14 +180,15 @@ def test_neutralize_unwritable_local_root(tmp_path: Path) -> None:
     writable.mkdir()
     keep = neutralize_unwritable_local_root(_scoped_cfg(writable))
     assert keep["backend"]["root_dir"] == str(writable)
-def test_seed_workspace_dir_on_create_tenant_scoped(tmp_path: Path) -> None:
-    """T2-3: host-rooted create default lands in orgs/<org>/agents/<id>."""
+def test_seed_workspace_dir_on_create_ignores_org(tmp_path: Path) -> None:
+    """T2-3 (simplified 2026-10-08): org attribution never moves directories —
+    tenant agents seed under shared/agents/<id> too; visibility is DB/RLS-only."""
     paths = PathLayout(tmp_path / "octop-home")
     config: dict[str, object] = {}
     host = seed_workspace_dir_on_create(
         config, paths=paths, agent_id="T2ORGA", org_id="org-a"
     )
-    assert host == (tmp_path / "octop-home" / "orgs" / "org-a" / "agents" / "T2ORGA").resolve()
+    assert host == (tmp_path / "octop-home" / "shared" / "agents" / "T2ORGA").resolve()
     assert config["workspace_dir"] == str(host)
     assert host.is_dir()
 

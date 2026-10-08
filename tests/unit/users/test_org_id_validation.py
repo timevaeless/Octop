@@ -1,9 +1,9 @@
-"""org_id shape validation must align with the filesystem sanitizer (P1-2).
+"""org_id shape validation (P1-2, kept after the 2026-10-08 layout
+simplification).
 
-``_safe_segment`` (infra/utils/paths.py) maps ``.`` to ``_``; an org id
-containing a dot would collide with its underscored twin onto the same
-``orgs/<id>`` directory — cross-tenant file mixing. Dots are therefore
-rejected at the only org-creation entry point.
+Attribution no longer maps to directories, but org ids still appear in
+API paths and logs — keep them to safe URL/log-friendly segments. Dots
+and slashes are rejected at the only org-creation entry point.
 """
 
 from __future__ import annotations
