@@ -406,6 +406,14 @@ class AgentManager:
         from octop.infra.agents.harness_resume_patch import apply_harness_resume_patch  # noqa: PLC0415
 
         apply_harness_resume_patch()
+        # Pluggable runtime patch: harness mcp_args_model coerces JSON Schema
+        # object/array args to str, so the LLM serialises nested JSON into a
+        # string (LAAC submit 1010000175-adjacent incident, 2026-10-08).
+        from octop.infra.agents.harness_args_schema_patch import (  # noqa: PLC0415
+            apply_harness_args_schema_patch,
+        )
+
+        apply_harness_args_schema_patch()
         self.memory_slim = MemorySlimCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
