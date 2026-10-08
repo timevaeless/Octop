@@ -343,7 +343,10 @@ def hf_cache_snapshot_dir(cache_dir: Path, hf_repo: str, *, revision: str = COS_
     repo_dir = cache_dir / ("models--" + hf_repo.replace("/", "--"))
     refs = repo_dir / "refs"
     refs.mkdir(parents=True, exist_ok=True)
-    (refs / "main").write_text(revision + "\n", encoding="utf-8")
+    # No trailing newline: huggingface_hub reads refs/main with f.read() and
+    # does not strip, so "rev\n" makes offline snapshot lookup miss the cache
+    # (embedding then hits the network and fails on blocked egress).
+    (refs / "main").write_text(revision, encoding="utf-8")
     dest = repo_dir / "snapshots" / revision
     dest.mkdir(parents=True, exist_ok=True)
     return dest

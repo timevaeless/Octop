@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  NAV_MAX_WIDTH,
+  NAV_MIN_WIDTH,
   SIDEBAR_GROUPED_NAV_KEYS,
   SIDEBAR_NAV_KEYS,
   buildNavSections,
+  clampNavWidth,
   isGroupedNavKey,
 } from "./sidebarNav";
 import type { OctopUser } from "../api/modules/auth";
@@ -57,5 +60,28 @@ describe("sidebarNav", () => {
       "control",
       "admin",
     ]);
+  });
+});
+
+describe("clampNavWidth", () => {
+  it("holds a dragged width inside the rail bounds", () => {
+    expect(clampNavWidth(120, 1440)).toBe(NAV_MIN_WIDTH);
+    expect(clampNavWidth(9999, 1440)).toBe(NAV_MAX_WIDTH);
+    expect(clampNavWidth(300, 1440)).toBe(300);
+  });
+
+  it("caps the rail at half a narrow desktop viewport", () => {
+    // 768px is the mobile breakpoint, so this is the narrowest desktop window.
+    expect(clampNavWidth(NAV_MAX_WIDTH, 768)).toBe(384);
+  });
+
+  it("lets the floor yield when the viewport cannot hold it", () => {
+    // Unreachable for the desktop rail, but the clamp must stay total instead
+    // of returning a width below its own floor.
+    expect(clampNavWidth(NAV_MAX_WIDTH, 320)).toBe(160);
+  });
+
+  it("rounds sub-pixel drag positions", () => {
+    expect(clampNavWidth(247.6, 1440)).toBe(248);
   });
 });

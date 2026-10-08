@@ -267,7 +267,7 @@ def delete_agent_offline(agent_id: str, *, home: Path | None = None) -> None:
         if row is None:
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
         workspace_dir = workspace_dir_from_config_json(
-            row.config_json, paths=svc.paths, agent_id=agent_id
+            row.config_json, paths=svc.paths, agent_id=agent_id, org_id=getattr(row, "org_id", None)
         )
         try:
             if workspace_dir.exists():

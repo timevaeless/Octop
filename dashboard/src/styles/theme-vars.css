@@ -1,27 +1,29 @@
 /* ===================================================================
    Octop Design System v3 – CSS Custom Properties
-   Default brand: Elegant Rose #E85D75
-   Palettes via html[data-palette="rose|tech|indigo|teal|violet|emerald|amber|slate"]
+   Default brand: Xiaohongshu red "xhs" (#FF2442 family)
+   Palettes via html[data-palette="xhs|rose|tech|indigo|teal|violet|emerald|amber|slate"]
    Mode via html[data-theme="light|dark"]
+   The :root block ships rose fallbacks; ThemeContext always sets
+   data-palette, so the matching palette block wins.
    =================================================================== */
 
 /* ---------- LIGHT THEME ---------- */
 :root,
 html[data-theme="light"] {
-  /* ---- Backgrounds ---- */
+  /* ---- Backgrounds (zinc neutrals — cooler, premium surface scale) ---- */
   --fn-bg-primary: #ffffff;
-  --fn-bg-secondary: #f7f8fa;
-  --fn-bg-tertiary: #f0f1f3;
+  --fn-bg-secondary: #fafafa;
+  --fn-bg-tertiary: #f4f4f5;
   --fn-bg-elevated: #ffffff;
   --fn-bg-layout: #f5f6f8;
   --fn-bg-container: #ffffff;
   --fn-bg-hover: rgba(232, 93, 117, 0.04);
   --fn-bg-active: rgba(232, 93, 117, 0.08);
   --fn-bg-selected: rgba(232, 93, 117, 0.06);
-  --fn-bg-code: #f5f6f8;
-  --fn-bg-toolbar: #fafbfc;
-  --fn-bg-toolbar-hover: #f0f1f3;
-  --fn-bg-input-label: #f7f8fa;
+  --fn-bg-code: #f4f4f5;
+  --fn-bg-toolbar: #fafafa;
+  --fn-bg-toolbar-hover: #f4f4f5;
+  --fn-bg-input-label: #fafafa;
   --fn-bg-success-light: #ecfdf5;
   --fn-bg-danger-light: #fef2f2;
   --fn-bg-warning-light: #fffbeb;
@@ -40,12 +42,18 @@ html[data-theme="light"] {
   --fn-fill-tertiary: #f2f3f5;
 
   /* ---- Text ---- */
-  --fn-text-primary: #111827;
-  --fn-text-secondary: #4b5563;
-  --fn-text-tertiary: #9ca3af;
-  --fn-text-quaternary: #d1d5db;
-  --fn-text-placeholder: #c0c5ce;
-  --fn-text-disabled: #d1d5db;
+  --fn-text-primary: #18181b;
+  --fn-text-secondary: #52525b;
+  --fn-text-tertiary: #a1a1aa;
+  --fn-text-quaternary: #d4d4d8;
+  --fn-text-placeholder: #b4b5bd;
+  --fn-text-disabled: #d4d4d8;
+  /* Deep-thinking body: one step lighter than secondary (≈ zinc-500) so it
+     reads as de-emphasized prose, not body copy. */
+  --fn-thinking-text: #71717a;
+  /* Markdown body copy: softened near-black (≈ zinc-700), WorkBuddy-style —
+     pure zinc-900 reads harsh on large answer blocks. */
+  --fn-markdown-text: #3f3f46;
   --fn-text-inverse: #ffffff;
   --fn-text-brand: #e85d75;
   --fn-text-danger: #ef4444;
@@ -54,12 +62,12 @@ html[data-theme="light"] {
   --fn-logo-filter: none;
   --fn-font-mono: ui-monospace, "SFMono-Regular", Consolas, monospace;
 
-  /* ---- Borders ---- */
-  --fn-border-primary: #e5e7eb;
-  --fn-border-secondary: #f3f4f6;
-  --fn-border-tertiary: #f9fafb;
-  --fn-border-input: #d1d5db;
-  --fn-border-input-alt: #e5e7eb;
+  /* ---- Borders (hairline zinc scale) ---- */
+  --fn-border-primary: #e4e4e7;
+  --fn-border-secondary: #f4f4f5;
+  --fn-border-tertiary: #fafafa;
+  --fn-border-input: #d4d4d8;
+  --fn-border-input-alt: #e4e4e7;
   --fn-border-focus: #e85d75;
   --fn-border: #e5e7eb;
   --fn-border-color: #e5e7eb;
@@ -130,15 +138,14 @@ html[data-theme="light"] {
   --fn-tag-remote-border: #fed7aa;
   --fn-tag-channel-text: #e85d75;
 
-  /* ---- Shadows ---- */
-  --fn-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --fn-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
-  --fn-shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06),
-    0 2px 4px -2px rgba(0, 0, 0, 0.04);
-  --fn-shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.07),
-    0 4px 6px -4px rgba(0, 0, 0, 0.04);
-  --fn-shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.07),
-    0 8px 10px -6px rgba(0, 0, 0, 0.04);
+  /* ---- Shadows (layered, low-opacity — premium depth) ---- */
+  --fn-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --fn-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 1px 3px rgba(0, 0, 0, 0.05);
+  --fn-shadow-md: 0 1px 2px rgba(0, 0, 0, 0.04),
+    0 3px 8px -2px rgba(0, 0, 0, 0.07);
+  --fn-shadow-lg: 0 6px 20px -4px rgba(0, 0, 0, 0.1);
+  --fn-shadow-xl: 0 0 0 1px rgba(0, 0, 0, 0.04),
+    0 4px 12px -2px rgba(0, 0, 0, 0.06), 0 24px 56px -12px rgba(0, 0, 0, 0.16);
   --fn-shadow-brand: 0 4px 14px rgba(232, 93, 117, 0.18);
   --fn-shadow-brand-lg: 0 8px 24px rgba(232, 93, 117, 0.24);
 
@@ -150,19 +157,19 @@ html[data-theme="light"] {
   --fn-row-selected-border: #e85d75;
 
   /* ---- Cards ---- */
-  --fn-card-border-normal: #e5e7eb;
+  --fn-card-border-normal: #e4e4e7;
   --fn-card-shadow-normal: 0 1px 3px rgba(0, 0, 0, 0.04);
   --fn-card-radius: 12px;
 
   /* ---- Sidebar ---- */
   --fn-sidebar-width: 240px;
   --fn-sidebar-bg: #ffffff;
-  --fn-sidebar-border: #ebebeb;
-  --fn-sidebar-item-hover: #f5f5f5;
+  --fn-sidebar-border: #e8e8ea;
+  --fn-sidebar-item-hover: #f4f4f5;
   --fn-sidebar-item-active-bg: #fde8ec;
   --fn-sidebar-item-active: rgba(232, 93, 117, 0.08);
   --fn-sidebar-item-active-text: #e85d75;
-  --fn-sidebar-group-text: #b0b5be;
+  --fn-sidebar-group-text: #a8a9b0;
 
   /* ---- Header ---- */
   --fn-header-height: 56px;
@@ -188,6 +195,32 @@ html[data-theme="light"] {
   --fn-radius-lg: 12px;
   --fn-radius-xl: 18px;
   --fn-radius-full: 9999px;
+
+  /* ---- Typography (shared across modes; consumed by typography.css
+     and by the antd ConfigProvider via var()) ---- */
+  /* Aligned with the WorkBuddy desktop client: PingFang SC leads so CJK
+     and Latin glyphs render with the same face/weight mapping. */
+  /* System font first: Latin/digits render in SF Pro (crisp), CJK falls
+     through to PingFang SC. PingFang-first would render Latin with its
+     own (worse) glyphs — the difference users notice in mixed text. */
+  --fn-font-family-base: -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Hiragino Sans GB", "Segoe UI", "Microsoft YaHei", sans-serif;
+  --fn-font-family-heading: var(--fn-font-family-base);
+  --fn-font-family-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo,
+    Consolas, "Liberation Mono", monospace;
+  --fn-font-size-xs: 12px;
+  --fn-font-size-sm: 13px;
+  --fn-font-size-md: 14px;
+  --fn-font-size-lg: 16px;
+  --fn-font-size-xl: 20px;
+  --fn-font-weight-heading: 600;
+  --fn-font-weight-body: 400;
+  --fn-font-weight-medium: 500;
+  --fn-line-height-tight: 1.3;
+  --fn-line-height-base: 1.6;
+  --fn-letter-spacing-heading: -0.015em;
+  --fn-letter-spacing-body: 0;
+  --fn-letter-spacing-caption: 0.01em;
 }
 
 /* ---------- DARK THEME ---------- */
@@ -230,6 +263,8 @@ html[data-theme="dark"] {
   --fn-text-quaternary: rgba(255, 255, 255, 0.2);
   --fn-text-placeholder: rgba(255, 255, 255, 0.16);
   --fn-text-disabled: rgba(255, 255, 255, 0.16);
+  --fn-thinking-text: rgba(255, 255, 255, 0.48);
+  --fn-markdown-text: rgba(255, 255, 255, 0.8);
   --fn-text-inverse: #0e0e0e;
   --fn-text-brand: #f08b9a;
   --fn-text-danger: #f87171;
@@ -314,12 +349,14 @@ html[data-theme="dark"] {
   --fn-tag-remote-border: rgba(249, 115, 22, 0.2);
   --fn-tag-channel-text: #f08b9a;
 
-  /* ---- Shadows ---- */
+  /* ---- Shadows (hairline ring + deep soft layer) ---- */
   --fn-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
   --fn-shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.18);
   --fn-shadow-md: 0 4px 6px rgba(0, 0, 0, 0.35), 0 2px 4px rgba(0, 0, 0, 0.22);
-  --fn-shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.35), 0 4px 6px rgba(0, 0, 0, 0.22);
-  --fn-shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.4), 0 8px 10px rgba(0, 0, 0, 0.25);
+  --fn-shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.05),
+    0 10px 24px rgba(0, 0, 0, 0.4);
+  --fn-shadow-xl: 0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 8px 16px rgba(0, 0, 0, 0.35), 0 24px 48px -8px rgba(0, 0, 0, 0.5);
   --fn-shadow-brand: 0 4px 14px rgba(232, 93, 117, 0.22);
   --fn-shadow-brand-lg: 0 8px 24px rgba(232, 93, 117, 0.3);
 
@@ -868,6 +905,77 @@ html[data-palette="slate"][data-theme="dark"] {
   --fn-sidebar-item-active-bg: rgba(148, 163, 184, 0.16);
   --fn-sidebar-item-active: rgba(148, 163, 184, 0.16);
   --fn-sidebar-item-active-text: #94a3b8;
+}
+
+/* ---------- XHS (#FF2442, Xiaohongshu red) ---------- */
+html[data-palette="xhs"]:not([data-theme="dark"]) {
+  --fn-bg-hover: rgba(255, 36, 66, 0.04);
+  --fn-bg-active: rgba(255, 36, 66, 0.08);
+  --fn-bg-selected: rgba(255, 36, 66, 0.06);
+  --fn-text-brand: #e0254a;
+  --fn-logo-color: #e0254a;
+  --fn-border-focus: #e0254a;
+  --fn-color-brand: #e0254a;
+  --fn-color-brand-hover: #c81e3e;
+  --fn-color-brand-soft: #c81e3e;
+  --fn-color-brand-bg: rgba(255, 36, 66, 0.06);
+  --fn-color-brand-light: #fff0f2;
+  --fn-color-brand-shadow: rgba(255, 36, 66, 0.15);
+  --fn-color-brand-glow: rgba(255, 36, 66, 0.08);
+  --fn-assistant-bubble-bg-gradient: linear-gradient(
+    135deg,
+    rgba(255, 240, 242, 0.7) 0%,
+    rgba(255, 255, 255, 0.35) 50%,
+    rgba(255, 228, 233, 0.45) 100%
+  );
+  --fn-assistant-bubble-border: rgba(255, 36, 66, 0.12);
+  --fn-assistant-glow-color: 255, 36, 66;
+  --fn-tag-channel-text: #e0254a;
+  --fn-shadow-brand: 0 4px 14px rgba(255, 36, 66, 0.18);
+  --fn-shadow-brand-lg: 0 8px 24px rgba(255, 36, 66, 0.24);
+  --fn-row-selected-bg: rgba(255, 36, 66, 0.05);
+  --fn-row-selected-hover: rgba(255, 36, 66, 0.09);
+  --fn-row-selected-alt-bg: rgba(255, 36, 66, 0.04);
+  --fn-row-selected-alt-hover: rgba(255, 36, 66, 0.08);
+  --fn-row-selected-border: #e0254a;
+  --fn-sidebar-item-active-bg: #fff0f2;
+  --fn-sidebar-item-active: rgba(255, 36, 66, 0.08);
+  --fn-sidebar-item-active-text: #e0254a;
+}
+
+html[data-palette="xhs"][data-theme="dark"] {
+  --fn-bg-hover: rgba(255, 36, 66, 0.1);
+  --fn-bg-active: rgba(255, 36, 66, 0.16);
+  --fn-bg-selected: rgba(255, 36, 66, 0.12);
+  --fn-text-brand: #ff7a8c;
+  --fn-logo-color: #ff7a8c;
+  --fn-border-focus: #ff7a8c;
+  --fn-color-brand: #e0254a;
+  --fn-color-brand-hover: #c81e3e;
+  --fn-color-brand-soft: #c81e3e;
+  --fn-color-brand-bg: rgba(255, 36, 66, 0.14);
+  --fn-color-brand-light: rgba(255, 36, 66, 0.18);
+  --fn-color-brand-shadow: rgba(255, 36, 66, 0.28);
+  --fn-color-brand-glow: rgba(255, 36, 66, 0.1);
+  --fn-assistant-bubble-bg-gradient: linear-gradient(
+    135deg,
+    rgba(255, 122, 140, 0.12) 0%,
+    rgba(255, 255, 255, 0.04) 50%,
+    rgba(255, 122, 140, 0.08) 100%
+  );
+  --fn-assistant-bubble-border: rgba(255, 122, 140, 0.16);
+  --fn-assistant-glow-color: 255, 122, 140;
+  --fn-tag-channel-text: #ff7a8c;
+  --fn-shadow-brand: 0 4px 14px rgba(255, 36, 66, 0.24);
+  --fn-shadow-brand-lg: 0 8px 24px rgba(255, 36, 66, 0.32);
+  --fn-row-selected-bg: rgba(255, 36, 66, 0.12);
+  --fn-row-selected-hover: rgba(255, 36, 66, 0.18);
+  --fn-row-selected-alt-bg: rgba(255, 36, 66, 0.1);
+  --fn-row-selected-alt-hover: rgba(255, 36, 66, 0.15);
+  --fn-row-selected-border: #ff7a8c;
+  --fn-sidebar-item-active-bg: rgba(255, 36, 66, 0.16);
+  --fn-sidebar-item-active: rgba(255, 36, 66, 0.16);
+  --fn-sidebar-item-active-text: #ff7a8c;
 }
 
 /* ---------- GLOBAL RESET & TRANSITIONS ---------- */

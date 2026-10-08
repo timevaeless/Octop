@@ -1454,3 +1454,264 @@ def test_validate_mcp_servers_for_user(db: SqlitePool):
     assert repo.validate_mcp_servers_for_user(uid, [mcp_name]) == [mcp_name]
     with pytest.raises(ValueError):
         repo.validate_mcp_servers_for_user(uid, ["other"])
+
+
+# ------------------------------------------------------- tenancy (016 org_id)
+#
+# A connector instance fronts a business system with its owner's credentials,
+# so tenancy is the *hard* boundary and ``allowed_roles`` only narrows within
+# it. These tests lock: creation stamps the tenant; a shared row is invisible
+# outside it; the custom-MCP shared-expansion gate mirrors the same predicate.
+
+
+ORG = "cheryfs"
+OTHER_ORG = "chery-dealer-001"
+
+
+def _mk_user(db: SqlitePool, username: str) -> int:
+    with db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO users(username, password_hash, role, created_at) VALUES (?, ?, 'user', 0)",
+            (username, "h"),
+        )
+        return int(
+            conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()["id"]
+        )
+
+
+def _mk_instance(
+    repo: ConnectorRepo,
+    db: SqlitePool,
+    username: str,
+    *,
+    shared: bool = False,
+    org_id: str | None = None,
+    allowed_roles: list[str] | None = None,
+) -> tuple[int, str]:
+    uid = _mk_user(db, username)
+    iid = new_ulid()
+    repo.create(
+        instance_id=iid,
+        user_id=uid,
+        kind="tencent-docs",
+        display_name=f"doc-{username}",
+        mcp_server_name=mcp_server_name("tencent-docs", iid),
+        shared=shared,
+        org_id=org_id,
+    )
+    if allowed_roles is not None:
+        repo.update_metadata(iid, allowed_roles=allowed_roles)
+    return uid, iid
+
+
+def test_create_stamps_the_creator_tenant(db: SqlitePool):
+    repo = ConnectorRepo(db)
+    uid, iid = _mk_instance(repo, db, "owner", org_id=ORG)
+    row = repo.get(iid)
+    assert row is not None and row.org_id == ORG
+
+    # No tenant given (2026-09-27: unattributed admin draft) stays NULL.
+    _, bare = _mk_instance(repo, db, "owner_bare")
+    assert repo.get(bare).org_id is None
+
+
+def test_a_shared_row_is_invisible_outside_its_tenant(db: SqlitePool):
+    repo = ConnectorRepo(db)
+    owner_uid, iid = _mk_instance(repo, db, "owner", shared=True, org_id=ORG)
+
+    same_tenant = _mk_user(db, "peer")
+    outsider = _mk_user(db, "outsider")
+
+    # Owner always sees their own row, whatever its scope.
+    assert iid in {r.instance_id for r in repo.list_visible(owner_uid, org_id=OTHER_ORG)}
+    # Same tenant: visible. Cross tenant: gone — roles cannot widen this.
+    assert iid in {r.instance_id for r in repo.list_visible(same_tenant, org_id=ORG)}
+    assert iid not in {r.instance_id for r in repo.list_visible(outsider, org_id=OTHER_ORG)}
+
+    # Unattributed (org NULL) is admin-draft territory: no tenant sees it…
+    _, draft = _mk_instance(repo, db, "platform_owner", shared=True)
+    assert draft not in {
+        r.instance_id for r in repo.list_visible(same_tenant, org_id=ORG, role_keys=[])
+    }
+    assert draft not in {
+        r.instance_id for r in repo.list_visible(outsider, org_id=OTHER_ORG, role_keys=[])
+    }
+    # …while an explicit platform share ('*') reaches both tenants.
+    _, platform = _mk_instance(repo, db, "platform_owner2", shared=True, org_id="*")
+    assert platform in {
+        r.instance_id for r in repo.list_visible(same_tenant, org_id=ORG, role_keys=[])
+    }
+    assert platform in {
+        r.instance_id for r in repo.list_visible(outsider, org_id=OTHER_ORG, role_keys=[])
+    }
+
+
+def test_allowed_roles_only_narrows_within_the_tenant(db: SqlitePool):
+    repo = ConnectorRepo(db)
+    _, restricted = _mk_instance(
+        repo, db, "owner", shared=True, org_id=ORG, allowed_roles=["finance_operator"]
+    )
+    peer_no_roles = _mk_user(db, "peer_no_roles")
+    peer_holder = _mk_user(db, "peer_holder")
+    outsider_holder = _mk_user(db, "outsider_holder")
+
+    # Same tenant, no ability packages: hidden (fail-closed).
+    assert restricted not in {
+        r.instance_id for r in repo.list_visible(peer_no_roles, org_id=ORG, role_keys=[])
+    }
+    # Same tenant, holding the package: visible.
+    assert restricted in {
+        r.instance_id
+        for r in repo.list_visible(peer_holder, org_id=ORG, role_keys=["finance_operator"])
+    }
+    # Holding the package but in another tenant: still hidden — the tenancy
+    # boundary wins over the role grant.
+    assert restricted not in {
+        r.instance_id
+        for r in repo.list_visible(
+            outsider_holder, org_id=OTHER_ORG, role_keys=["finance_operator"]
+        )
+    }
+
+
+def test_shared_custom_parent_gate_mirrors_list_visible():
+    from octop.infra.connectors.service import _shared_custom_parent_visible
+    from octop.infra.db.repos.connectors import ConnectorRow
+    from octop.infra.users.context import AuthzContext
+
+    def _row(org_id: str | None, allowed_roles: list[str], owner: int = 1) -> ConnectorRow:
+        return ConnectorRow(
+            id=1,
+            instance_id="i",
+            user_id=owner,
+            kind="custom_mcp",
+            display_name="d",
+            status="active",
+            shared=True,
+            mcp_server_name="m",
+            credential_blob=None,
+            credential_expires_at=None,
+            credential_rotated_at=None,
+            config_json=None,
+            created_at=0,
+            updated_at=0,
+            org_id=org_id,
+            allowed_roles=allowed_roles,
+        )
+
+    viewer = AuthzContext(user_id=2, org_id=ORG, role_keys=("finance_operator",))
+    admin = AuthzContext(user_id=2, org_id=OTHER_ORG, is_admin=True)
+
+    # Same tenant, unrestricted: visible.
+    assert _shared_custom_parent_visible(_row(ORG, []), 2, viewer)
+    # Same tenant, role matches: visible.
+    assert _shared_custom_parent_visible(_row(ORG, ["finance_operator"]), 2, viewer)
+    # Same tenant, role missing: hidden.
+    assert not _shared_custom_parent_visible(_row(ORG, ["other_role"]), 2, viewer)
+    # Cross tenant: hidden even with a matching role (hard boundary).
+    assert not _shared_custom_parent_visible(_row(OTHER_ORG, ["finance_operator"]), 2, viewer)
+    # Unattributed (org NULL) = admin draft: hidden from every tenant viewer
+    # at the runtime layer; only the explicit platform share ('*') crosses.
+    assert not _shared_custom_parent_visible(_row(None, []), 2, viewer)
+    assert _shared_custom_parent_visible(_row("*", []), 2, viewer)
+    assert _shared_custom_parent_visible(_row("*", ["finance_operator"]), 2, viewer)
+    assert not _shared_custom_parent_visible(_row("*", ["other_role"]), 2, viewer)
+    # Admin role_filter is None = no role gate within the same tenant.
+    assert _shared_custom_parent_visible(_row(OTHER_ORG, ["other_role"]), 2, admin)
+    # But the tenancy boundary still applies to admins at this layer — the
+    # full admin bypass lives at the request layer (can_access_resource),
+    # while the runtime gate mirrors list_visible (org filter, no role filter).
+    assert not _shared_custom_parent_visible(_row(ORG, []), 2, admin)
+    # …and the runtime flavor never reaches an unattributed draft either.
+    assert not _shared_custom_parent_visible(_row(None, []), 2, admin)
+    # Legacy callers without authz keep the unfiltered behavior.
+    assert _shared_custom_parent_visible(_row(OTHER_ORG, ["x"]), 2, None)
+
+
+# --------------------------------------- delegate_identity probe authentication
+
+_DELEGATE_SPEC = {
+    "transport": "streamable_http",
+    "url": "http://172.17.0.1/api/internal/mcp/summer-cmc",
+    "enabled": True,
+    "delegate_identity": True,
+}
+
+_STATIC_SPEC = {
+    "transport": "streamable_http",
+    "url": "http://172.17.0.1/api/internal/mcp/other",
+    "enabled": True,
+    "headers": {"Authorization": "Bearer static"},
+}
+
+
+def _patch_http_probe(monkeypatch: pytest.MonkeyPatch, seen: dict[str, object]) -> None:
+    async def _probe(url: str, headers: dict[str, str], *, kind: str) -> dict[str, object]:
+        seen.update(url=url, headers=dict(headers), kind=kind)
+        return {"ok": True, "tool_count": 0, "tools": []}
+
+    monkeypatch.setattr("octop.infra.connectors.probe.probe_streamable_http_mcp", _probe)
+
+
+@pytest.mark.asyncio
+async def test_custom_mcp_probe_injects_delegate_token(monkeypatch: pytest.MonkeyPatch):
+    """delegate_identity spec + minted token → probe carries the bearer JWT."""
+    from octop.infra.connectors.probe import probe_custom_mcp_server
+
+    seen: dict[str, object] = {}
+    _patch_http_probe(monkeypatch, seen)
+
+    out = await probe_custom_mcp_server(dict(_DELEGATE_SPEC), delegate_token="tok-1")
+    assert out["ok"] is True
+    assert seen["headers"]["Authorization"] == "Bearer tok-1"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
+async def test_custom_mcp_probe_without_token_stays_credential_less(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """delegate_identity spec without a minted token → no Authorization header
+    (documents the pre-fix failure mode instead of silently fabricating one)."""
+    from octop.infra.connectors.probe import probe_custom_mcp_server
+
+    seen: dict[str, object] = {}
+    _patch_http_probe(monkeypatch, seen)
+
+    await probe_custom_mcp_server(dict(_DELEGATE_SPEC), delegate_token=None)
+    assert "Authorization" not in seen["headers"]  # type: ignore[operator]
+
+
+@pytest.mark.asyncio
+async def test_custom_mcp_probe_keeps_static_headers_despite_token(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Non-delegate specs are untouched even when a token is available —
+    injection only happens for explicit delegate_identity opt-in."""
+    from octop.infra.connectors.probe import probe_custom_mcp_server
+
+    seen: dict[str, object] = {}
+    _patch_http_probe(monkeypatch, seen)
+
+    await probe_custom_mcp_server(dict(_STATIC_SPEC), delegate_token="tok-1")
+    assert seen["headers"]["Authorization"] == "Bearer static"  # type: ignore[index]
+
+
+def test_probe_mcp_http_error_403_is_forbidden_not_auth():
+    """403 from a custom MCP endpoint = authenticated-but-unauthorized (hub ACL),
+    not a bad token — must not surface as "认证失败"."""
+    import httpx
+
+    from octop.infra.connectors.probe import _probe_mcp_http_error
+
+    req = httpx.Request("POST", "http://172.17.0.1/api/internal/mcp/summer-cmc")
+    exc = httpx.HTTPStatusError("403", request=req, response=httpx.Response(403, request=req))
+    out = _probe_mcp_http_error(exc, kind="custom-mcp")
+    assert out["error_type"] == "forbidden"
+    assert out["status_code"] == 403
+    assert "认证失败" not in out["error"]
+    assert "分配角色" in out["error"]
+
+    exc401 = httpx.HTTPStatusError("401", request=req, response=httpx.Response(401, request=req))
+    out401 = _probe_mcp_http_error(exc401, kind="custom-mcp")
+    assert out401["error_type"] == "auth"
+    assert out401["error"] == "认证失败，请检查 Token 或授权码"

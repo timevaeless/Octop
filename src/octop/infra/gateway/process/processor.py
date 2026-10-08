@@ -143,6 +143,7 @@ class GlobalProcessor:
         audit_repo: AuditRepo,
         agent_repo: AgentRepo,
         user_repo: UserRepo,
+        org_repo: Any | None = None,
         connector_repo: ConnectorRepo,
         knowledge_repo: Any | None = None,
         settings_repo: Any | None = None,
@@ -161,11 +162,19 @@ class GlobalProcessor:
         self._agent_repo = agent_repo
         self._user_repo = user_repo
         self._connector_repo = connector_repo
+        # user_repo / org_repo MUST ride along on the knowledge services: the
+        # per-turn knowledge stamping uses them to resolve the caller's tenant
+        # and role filter. Omitting them silently degrades every non-admin
+        # turn to the legacy per-user visibility branch, where tenant-scoped
+        # shared knowledge bases are invisible and search_knowledge gets
+        # hidden (catalog empty) even when the composer sent it explicitly.
         self._knowledge_services = (
             SimpleNamespace(
                 knowledge_repo=knowledge_repo,
                 settings_repo=settings_repo,
                 provider_repo=provider_repo,
+                user_repo=user_repo,
+                org_repo=org_repo,
             )
             if knowledge_repo is not None and settings_repo is not None
             else None
@@ -1526,11 +1535,21 @@ class GlobalProcessor:
         """Expose selected knowledge-base ids for the search_knowledge tool."""
         if self._knowledge_services is None:
             return
-        bases = (
-            self._knowledge_services.knowledge_repo.list_all()
-            if is_admin
-            else self._knowledge_services.knowledge_repo.list_visible(user_id)
-        )
+        user_repo = getattr(self._knowledge_services, "user_repo", None)
+        org_repo = getattr(self._knowledge_services, "org_repo", None)
+        if is_admin:
+            bases = self._knowledge_services.knowledge_repo.list_all()
+        elif user_repo is not None and org_repo is not None:
+            from octop.infra.users.context import authz_binding
+
+            with authz_binding(user_repo, org_repo, user_id) as authz:
+                bases = self._knowledge_services.knowledge_repo.list_visible(
+                    user_id, org_id=authz.org_id, role_keys=authz.role_filter
+                )
+        else:
+            # Test/legacy services without tenancy repos: keep the plain
+            # per-user visibility (production always has both repos).
+            bases = self._knowledge_services.knowledge_repo.list_visible(user_id)
         extra_ids = self._agent_manager.default_knowledge_base_ids(agent_id) if agent_id else None
         stamp_turn_knowledge_config(
             request,
@@ -1579,16 +1598,24 @@ class GlobalProcessor:
             connector_user_id=user_id,
         )
         if failed:
-            detail = f"mcp load failed: {', '.join(failed)}"
-            if raise_on_failure:
-                raise OctopError(ErrorCode.CONNECTOR_MCP_LOAD_FAILED, detail)
+            # Partial failure degrades instead of aborting the turn: keep the
+            # servers whose tools loaded and drop the unavailable ones (e.g. a
+            # connector denied by hub tool ACL). Only a total failure aborts —
+            # the client still deserves a clear error when nothing mounted.
+            loaded = [n for n in merged if n not in failed]
             logger.warning(
-                "skipping turn MCP for agent=%s user=%s (%s)",
+                "turn MCP degraded agent=%s user=%s: failed=%s loaded=%s",
                 agent_id,
                 user_id,
-                detail,
+                failed,
+                loaded,
             )
-            return None
+            if not loaded:
+                detail = f"mcp load failed: {', '.join(failed)}"
+                if raise_on_failure:
+                    raise OctopError(ErrorCode.CONNECTOR_MCP_LOAD_FAILED, detail)
+                return None
+            return loaded
         return merged
 
     async def _record_stream_error(self, *, user_id: int, agent_id: str, exc: Exception) -> None:

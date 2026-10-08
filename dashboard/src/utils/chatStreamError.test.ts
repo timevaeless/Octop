@@ -4,6 +4,7 @@ import {
   classifyChatStreamError,
   formatChatStreamError,
   isChatStreamError,
+  isModelRetryFailureText,
 } from "./chatStreamError";
 
 const t = ((key: string) => `translated:${key}`) as unknown as (
@@ -129,5 +130,31 @@ describe("classifyChatStreamError", () => {
         "If you see Error code: 429 or rate_limit, wait and retry.",
       ),
     ).toBe("stream_errors.rate_limit");
+  });
+});
+
+describe("isModelRetryFailureText", () => {
+  it("matches genuine retry-failure assistant text", () => {
+    expect(
+      isModelRetryFailureText(
+        "Model call failed after 2 attempts with AuthenticationError: " +
+          "Error code: 401 - invalid api key",
+      ),
+    ).toBe(true);
+    expect(isModelRetryFailureText("Error: Model call failed after 1 attempt"))
+      .toBe(true);
+  });
+
+  it("does not match prose that merely mentions an error", () => {
+    // Regression: a full answer discussing a KB tool's HTTP 401 used to be
+    // promoted to a "模型鉴权失败" error bubble via substring matching.
+    const prose =
+      "以下全部来自你挂的 KB。说明：KB 工具本轮仍不通（`weknora search` 返回 " +
+      "**HTTP 401**，卡点已前移到 weknora 鉴权），我按兜底路径直读磁盘手册作答。\n" +
+      "## 一、进件在整个链路中的位置";
+    expect(isModelRetryFailureText(prose)).toBe(false);
+    expect(isModelRetryFailureText("hello world")).toBe(false);
+    expect(isModelRetryFailureText("")).toBe(false);
+    expect(isModelRetryFailureText(null)).toBe(false);
   });
 });

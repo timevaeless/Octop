@@ -193,3 +193,70 @@ def test_resume_pending_index_jobs_resets_processing_and_enqueues(
 
     assert repo.get_document(doc.id).status == "pending"
     assert enqueued == [(kb.id, doc.id)]
+
+
+def test_process_document_binds_kb_tenant_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review 2026-09-26 P1-1: the executor thread has no tenant scope.
+
+    run_in_executor does not copy contextvars, so process_document must
+    resolve the KB through a bypass window and then bind the KB's org —
+    otherwise PostgreSQL RLS hides the tenant row and indexing fails.
+    """
+    from octop.infra.users import tenancy_context
+
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = KnowledgeRepo(pool)
+    owner_id = UserRepo(pool).create(username="owner", password_hash="h", role="user")
+    kb = repo.create_base(
+        owner_user_id=owner_id,
+        name="Docs",
+        embedding_model="BAAI/bge-small-zh-v1.5",
+        org_id="org-scope",
+    )
+    doc = repo.create_document(
+        kb_id=kb.id, filename="notes.md", content_type="text/markdown", byte_size=5
+    )
+    write_document(kb.id, doc.id, doc.filename, b"hello", org_id="org-scope")
+
+    seen: dict[str, tenancy_context.TenantScope | None] = {}
+    real_get_base = repo.get_base
+    real_update_document = repo.update_document
+
+    def spy_get_base(kb_id: str):
+        seen["get_base"] = tenancy_context.current_scope()
+        return real_get_base(kb_id)
+
+    def spy_update_document(*args: object, **kwargs: object):
+        seen["update_document"] = tenancy_context.current_scope()
+        return real_update_document(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(repo, "get_base", spy_get_base)
+    monkeypatch.setattr(repo, "update_document", spy_update_document)
+
+    services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
+    monkeypatch.setattr(jobs, "assert_knowledge_usable", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        jobs, "embed_knowledge_texts", lambda _services, texts: [[1.0, 0.0] for _ in texts]
+    )
+
+    prior_scope = tenancy_context.current_scope()
+    jobs.process_document(services, kb.id, doc.id)
+
+    # Resolution happens inside the explicit bypass window...
+    resolve_scope = seen["get_base"]
+    assert resolve_scope is not None
+    assert resolve_scope.bypass is True
+    assert resolve_scope.org_id is None
+    # ...then the job itself runs under the KB's tenant.
+    work_scope = seen["update_document"]
+    assert work_scope is not None
+    assert work_scope.org_id == "org-scope"
+    assert work_scope.bypass is False
+    # And nothing leaks: the surrounding context is exactly as it was before
+    # the job ran (earlier tests in this thread may have left a scope bound;
+    # tolerate that — the token reset restores it verbatim).
+    assert tenancy_context.current_scope() == prior_scope

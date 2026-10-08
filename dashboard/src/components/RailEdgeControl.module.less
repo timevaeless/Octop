@@ -50,6 +50,17 @@
   pointer-events: none;
 }
 
+/*
+ * Optional drag-to-resize target (opt-in via onResizeStart). Sits under .btn
+ * so the chevron keeps its own hit area; everywhere else on the edge drags.
+ */
+.resizeHandle {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  cursor: col-resize;
+}
+
 .btn {
   position: absolute;
   top: 50%;

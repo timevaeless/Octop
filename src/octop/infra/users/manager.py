@@ -100,18 +100,38 @@ class UserManager:
 
     # ----- lifecycle -----
 
+    def _user_from_row(self, row: Any) -> User:
+        """Build a ``User`` (with tenant context) from a ``UserRow``.
+
+        ``role_keys`` is never stored on ``users``; the membership row is the
+        authority, so it is read here for every (re)hydration path — boot,
+        password login, SSO resolve/bind, enable. T1-1 pluggable hook
+        (octop.infra.users.tenant_hydration): the membership read lives in
+        that module; deleting it together with this branch restores the
+        community constructor verbatim.
+        """
+        role_keys: builtins.list[str] = []
+        if row.default_org_id is not None:
+            from octop.infra.users.tenant_hydration import active_role_keys_for
+
+            role_keys = active_role_keys_for(self._services, row.id, row.default_org_id)
+        return User(
+            id=row.id,
+            username=row.username,
+            role=str(row.role),
+            display_name=row.display_name,
+            locale=normalize_locale(row.locale),
+            permissions=list(row.permissions),
+            org_id=row.default_org_id,
+            role_keys=role_keys,
+            token_epoch=int(row.token_epoch or 0),
+            sso_subject=getattr(row, "sso_subject", None),
+        )
+
     async def boot(self) -> None:
         async with self._lock:
             for row in self._services.user_repo.list(include_disabled=False):
-                user = User(
-                    id=row.id,
-                    username=row.username,
-                    role=str(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
-                self._users[row.username] = user
+                self._users[row.username] = self._user_from_row(row)
 
     async def shutdown_all(self) -> None:
         async with self._lock:
@@ -189,6 +209,16 @@ class UserManager:
         """Adopt a user row created outside ``create`` (e.g. invite redeem)."""
         self._users[user.username] = user
 
+    async def refresh_tenant_context(self, username: str) -> User | None:
+        """Reload org/role context for a user after an admin membership change."""
+        row = self._services.user_repo.get_by_username(username)
+        if row is None:
+            return None
+        user = self._user_from_row(row)
+        async with self._lock:
+            self._users[username] = user
+        return user
+
     async def create_from_invite(
         self,
         *,
@@ -202,7 +232,7 @@ class UserManager:
         from octop.infra.users.invites import InviteService
 
         async with self._lock:
-            return InviteService(self._services).redeem(
+            user = InviteService(self._services).redeem(
                 code=code,
                 username=username,
                 password=password,
@@ -211,6 +241,16 @@ class UserManager:
                 email=email,
                 register_user=self.register_cached_user,
             )
+            # Defect #4 defense: redeem registers an org-less placeholder User
+            # (built before the tenant binding exists in object form).
+            # default_org_id and the membership row are already committed
+            # in-transaction by the repo, so re-hydrate the cache entry from
+            # the committed row instead of trusting the placeholder.
+            fresh = self._services.user_repo.get(user.id)
+            if fresh is not None:
+                user = self._user_from_row(fresh)
+                self._users[user.username] = user
+            return user
 
     def get(self, username: str) -> User | None:
         return self._users.get(username)
@@ -236,6 +276,18 @@ class UserManager:
         return self._services.user_repo.count()
 
     # ----- auth -----
+
+    def _apply_jit_resolution(self, user_id: int, provider_id: int, claims: dict[str, Any]) -> None:
+        """T1-1 pluggable hook — implementation in octop.infra.users.tenant_hydration.
+
+        Runs the five-level tenant chain on every SSO login and persists the
+        outcome (membership upsert, default_org claim, epoch bump, pending
+        trace, audit). Lazy import; deleting the module together with this
+        delegation restores community behaviour verbatim.
+        """
+        from octop.infra.users.tenant_hydration import apply_jit_resolution as _impl
+
+        _impl(self._services, user_id, provider_id, claims)
 
     async def resolve_or_create_sso_user(
         self,
@@ -291,16 +343,16 @@ class UserManager:
                             raise
                         await asyncio.sleep(0.01 * (attempt + 1))
                     else:
-                        user = User(
-                            id=uid,
-                            username=username,
-                            role=sso_role_id,
-                            display_name=display_name,
-                            permissions=list(sso_permissions),
-                        )
+                        self._apply_jit_resolution(uid, provider_id, claims)
+                        fresh = self._services.user_repo.get(uid)
+                        assert fresh is not None
+                        user = self._user_from_row(fresh)
                         self._users[username] = user
                         self._services.audit_repo.write(
-                            actor=username, action="user.sso_create", target=username
+                            actor=username,
+                            action="user.sso_create",
+                            target=username,
+                            org_id=fresh.default_org_id,
                         )
                         return user
 
@@ -315,19 +367,13 @@ class UserManager:
                 row.id,
                 email=email,
             )
-            cached_user = self._users.get(row.username)
-            if cached_user is None:
-                user = User(
-                    id=row.id,
-                    username=row.username,
-                    role=str(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
-                self._users[row.username] = user
-                return user
-            return cached_user
+            self._apply_jit_resolution(row.id, provider_id, claims)
+            fresh = self._services.user_repo.get(row.id)
+            if fresh is not None:
+                row = fresh
+            rebuilt = self._user_from_row(row)
+            self._users[row.username] = rebuilt
+            return rebuilt
 
     async def bind_sso_identity(
         self,
@@ -369,21 +415,19 @@ class UserManager:
                 row.id,
                 email=email,
             )
+            self._apply_jit_resolution(row.id, provider_id, claims)
             self._services.audit_repo.write(
-                actor=row.username, action="user.sso_bind", target=row.username
+                actor=row.username,
+                action="user.sso_bind",
+                target=row.username,
+                org_id=row.default_org_id,
             )
-            cached = self._users.get(row.username)
-            if cached is None:
-                cached = User(
-                    id=row.id,
-                    username=row.username,
-                    role=str(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
-                self._users[row.username] = cached
-            return cached
+            fresh = self._services.user_repo.get(row.id)
+            if fresh is not None:
+                row = fresh
+            rebuilt = self._user_from_row(row)
+            self._users[row.username] = rebuilt
+            return rebuilt
 
     async def unbind_sso_identity(self, *, user_id: int, kind: str) -> User:
         async with self._lock:
@@ -405,7 +449,10 @@ class UserManager:
                 )
             self._services.user_repo.remove_sso_identity(row.id, provider_id=provider.id)
             self._services.audit_repo.write(
-                actor=row.username, action="user.sso_unbind", target=row.username
+                actor=row.username,
+                action="user.sso_unbind",
+                target=row.username,
+                org_id=row.default_org_id,
             )
             return self._cached_or_row_user(row)
 
@@ -416,14 +463,7 @@ class UserManager:
         cached = self._users.get(row.username)
         if cached is not None:
             return cached
-        user = User(
-            id=row.id,
-            username=row.username,
-            role=str(row.role),
-            display_name=row.display_name,
-            locale=normalize_locale(row.locale),
-            permissions=list(row.permissions),
-        )
+        user = self._user_from_row(row)
         self._users[row.username] = user
         return user
 
@@ -482,7 +522,10 @@ class UserManager:
                 now=now,
             )
             self._services.audit_repo.write(
-                actor=row.username, action="auth.failed", target=row.username
+                actor=row.username,
+                action="auth.failed",
+                target=row.username,
+                org_id=row.default_org_id,
             )
             if retry_after > 0:
                 minutes = max(1, (retry_after + 59) // 60)
@@ -493,18 +536,17 @@ class UserManager:
                 )
             return None
         self._services.user_repo.clear_login_lockout(row.id)
-        user = self._users.get(row.username)
-        if user is None:
-            user = User(
-                id=row.id,
-                username=row.username,
-                role=str(row.role),
-                display_name=row.display_name,
-                locale=normalize_locale(row.locale),
-                permissions=list(row.permissions),
-            )
-            self._users[row.username] = user
-        self._services.audit_repo.write(actor=row.username, action="auth.login")
+        # Always rebuild from the freshly-fetched row (defect #4): a cached
+        # User may predate the tenant binding (e.g. registered by invite
+        # redeem as an org-less placeholder). The SSO path (resolve_sso)
+        # re-hydrates on every login for the same reason. The disabled and
+        # lockout checks above already ran against this same fresh row, so
+        # the round-10 "cache carries identity only" contract is preserved.
+        user = self._user_from_row(row)
+        self._users[row.username] = user
+        self._services.audit_repo.write(
+            actor=row.username, action="auth.login", org_id=row.default_org_id
+        )
         return user
 
     async def change_password(self, username: str, old: str, new: str) -> None:
@@ -524,7 +566,10 @@ class UserManager:
         self._services.user_repo.set_password_hash(row.id, hash_password(new))
         self._services.user_repo.clear_login_lockout(row.id)
         self._services.audit_repo.write(
-            actor=username, action="user.password_changed", target=username
+            actor=username,
+            action="user.password_changed",
+            target=username,
+            org_id=row.default_org_id,
         )
 
     async def reset_password(self, username: str, new: str) -> None:
@@ -536,7 +581,10 @@ class UserManager:
         self._services.user_repo.set_password_hash(row.id, hash_password(new))
         self._services.user_repo.clear_login_lockout(row.id)
         self._services.audit_repo.write(
-            actor=ACTOR_ADMIN, action="user.password_reset", target=username
+            actor=ACTOR_ADMIN,
+            action="user.password_reset",
+            target=username,
+            org_id=row.default_org_id,
         )
 
     async def set_permissions(self, username: str, permissions: builtins.list[str]) -> None:
@@ -557,6 +605,7 @@ class UserManager:
             action="user.set_permissions",
             target=username,
             payload=",".join(keys),
+            org_id=row.default_org_id,
         )
 
     async def set_resource_policy(
@@ -741,14 +790,7 @@ class UserManager:
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, "user not found")
         self._services.user_repo.set_disabled(row.id, False)
-        user = User(
-            id=row.id,
-            username=row.username,
-            role=str(row.role),
-            display_name=row.display_name,
-            locale=normalize_locale(row.locale),
-            permissions=list(row.permissions),
-        )
+        user = self._user_from_row(row)
         async with self._lock:
             self._users[username] = user
         self._services.audit_repo.write(actor=ACTOR_ADMIN, action="user.enable", target=username)

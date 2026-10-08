@@ -4,6 +4,7 @@ import { Routes, Route, useLocation } from "react-router-dom";
 import Sidebar from "../Sidebar";
 import Header from "../Header";
 import RailEdgeControl from "../../components/RailEdgeControl";
+import { useNavResize } from "./useNavResize";
 import PageLoading from "../../components/PageLoading";
 import { ServiceRestartProvider } from "../../context/ServiceRestartContext";
 import { BackupOperationProvider } from "../../context/BackupOperationContext";
@@ -69,6 +70,8 @@ export default function MainLayout() {
   const onWorkbench = isWorkbenchPath(currentPath);
 
   const [collapsed, setCollapsed] = useState(() => getSavedCollapsed());
+  // 侧栏拖拽调宽状态机（pointer-drag + 持久化）抽到独立模块，行为不变。
+  const { navWidth, navResizing, handleNavResizeStart } = useNavResize();
   const [chatSidebarOpen, setChatSidebarOpen] = useChatSidebarOpen();
   const [workbenchMounted, setWorkbenchMounted] = useState(() => onWorkbench);
 
@@ -223,12 +226,15 @@ export default function MainLayout() {
               collapsed={collapsed}
               onToggle={toggleCollapsed}
               isMobile={isMobile}
+              expandedWidth={navWidth}
+              resizing={navResizing}
             />
             {!isMobile && (
               <RailEdgeControl
                 expanded={!collapsed}
                 onToggle={handleNavRailToggle}
                 side="end"
+                onResizeStart={collapsed ? undefined : handleNavResizeStart}
               />
             )}
           </div>

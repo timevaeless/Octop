@@ -102,6 +102,9 @@ interface ExpertDetail {
   file_contents?: FileContent[];
   welcome_message?: { zh?: string; en?: string };
   quick_prompts?: QuickPrompt[];
+  default_knowledge_base_ids?: string[];
+  default_mcp_servers?: string[];
+  default_skill_package_ids?: string[];
 }
 
 export type CreateFromTemplateSource =
@@ -354,6 +357,16 @@ export default function CreateFromExpertDrawer({
             welcome_message: welcomeText,
           });
         }
+        // Published templates carry the publisher's composer defaults
+        // (2026-09-29): prefill so installs work out of the box; the
+        // installer can still change or clear any of them.
+        if (source.kind === "published") {
+          form.setFieldsValue({
+            knowledge_base_ids: data.default_knowledge_base_ids ?? [],
+            mcp_servers: data.default_mcp_servers ?? [],
+            skill_package_ids: data.default_skill_package_ids ?? [],
+          });
+        }
       })
       .catch(() => {
         if (!cancelled) {
@@ -389,6 +402,37 @@ export default function CreateFromExpertDrawer({
       cancelled = true;
     };
   }, [open]);
+
+  // Published templates can reference skill packages the installer cannot
+  // see — drop those prefilled ids (the raw id would otherwise leak into
+  // the Select) and say so. Mirrors the connector/KB guard inside
+  // ExpertComposerDefaultsFields.
+  const watchedSkillPackageIds = Form.useWatch(
+    "skill_package_ids",
+    form,
+  ) as string[] | undefined;
+  useEffect(() => {
+    if (!open || source?.kind !== "published" || skillPackagesLoading) return;
+    const selected = watchedSkillPackageIds ?? [];
+    if (!selected.length) return;
+    const known = new Set(skillPackages.map((pack) => pack.id));
+    const kept = selected.filter((id) => known.has(id));
+    if (kept.length === selected.length) return;
+    form.setFieldsValue({ skill_package_ids: kept });
+    message.warning(
+      t("experts.skillPackagesSkipped", {
+        count: selected.length - kept.length,
+      }),
+    );
+  }, [
+    open,
+    source,
+    skillPackages,
+    skillPackagesLoading,
+    watchedSkillPackageIds,
+    form,
+    t,
+  ]);
 
   const handleCreate = async () => {
     if (!source) return;

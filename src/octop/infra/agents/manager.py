@@ -24,6 +24,7 @@ from octop.i18n.domains.agents import (
     NO_MODELS_CONFIGURED,
     format_agent_start_error,
 )
+from octop.infra.agents import shared_agent_privacy
 from octop.infra.agents.memory.backend import memory_backend_from_agent_config
 from octop.infra.agents.memory.slim import MemorySlimCoordinator
 from octop.infra.agents.providers import ProviderStore, sync_providers_to_harness
@@ -64,6 +65,7 @@ from octop.infra.backend.docker_spec import (
 )
 from octop.infra.backend.resolver import (
     default_agent_backend_spec,
+    normalize_backend_config,
     resolve_agent_backend_spec,
     windows_neutralize_host_root,
 )
@@ -81,6 +83,8 @@ from octop.infra.skills.workspace_catalog import (
     list_workspace_skill_summaries,
     repair_workspace_skill_manifests,
 )
+from octop.infra.agents.visibility import visible_knowledge_bases
+from octop.infra.users.context import resolve_authz_context
 from octop.infra.utils.locale import Locale
 from octop.infra.utils.ulid import new_short_id
 
@@ -318,6 +322,8 @@ class AgentCreateSpec:
     welcome_message: str | None = None
     knowledge_base_ids: list[str] | None = None
     mcp_servers: list[str] | None = None
+    # Creator's tenant, stamped at creation so sharing is scoped to it.
+    org_id: str | None = None
     runtime_config: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
     kind: str = "expert"
@@ -394,6 +400,12 @@ class AgentManager:
             workspace_for=self.workspace_for_agent,
         )
         self._harness_manager: HarnessAgentManager | None = None
+        # Pluggable runtime patch: harness resume_hitl drops request-scoped
+        # configurable (MCP tools vanish after HITL resume). One-line hook —
+        # delete these two lines to restore stock upstream behaviour.
+        from octop.infra.agents.harness_resume_patch import apply_harness_resume_patch  # noqa: PLC0415
+
+        apply_harness_resume_patch()
         self.memory_slim = MemorySlimCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
@@ -439,6 +451,9 @@ class AgentManager:
         self._mcp_tool_cache: dict[tuple[int, str, str], list[Any]] = {}
         self._mcp_tool_cache_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._mcp_tool_cache_guard = asyncio.Lock()
+        # Expiry of the delegated token behind each cached connection:
+        # (user_id, server_name) -> epoch seconds (None = no delegated token).
+        self._mcp_token_expiry: dict[tuple[int, str], float | None] = {}
         # Sanitized plugin tool name → original label (per agent, rebuilt on reload).
         self._plugin_tool_labels: dict[str, dict[str, str]] = {}
 
@@ -649,7 +664,9 @@ class AgentManager:
 
             # Create-time: user-assigned workspace_dir wins; otherwise default+encode.
             # After insert, resolve_workspace_dir reads the DB value as source of truth.
-            seed_workspace_dir_on_create(config, paths=self._paths, agent_id=agent_id)
+            seed_workspace_dir_on_create(
+                config, paths=self._paths, agent_id=agent_id, org_id=spec.org_id
+            )
             # ``system_files_path`` is an internal layout control and must not
             # be user-configurable. New agents always use the default prefix.
             config.pop("system_files_path", None)
@@ -701,11 +718,14 @@ class AgentManager:
                 ),
                 knowledge_base_ids=knowledge_ids_json,
                 mcp_servers=mcp_servers_json,
+                org_id=spec.org_id,
                 kind=spec.kind if spec.kind in {"expert", "team"} else "expert",
             )
             row = self._repos.agent_repo.get(agent_id)
             assert row is not None
             if spec.is_shared:
+                # 2026-09-27: no share-time restamp — spec.org_id is already
+                # on the row from the INSERT above; sharing only flips the flag.
                 self._repos.agent_repo.set_shared(agent_id, True)
                 row = self._repos.agent_repo.get(agent_id)
                 assert row is not None
@@ -876,7 +896,13 @@ class AgentManager:
         return row
 
     async def set_shared(self, agent_id: str, shared: bool) -> AgentRow:
-        """Persist whether other users may access this agent."""
+        """Persist whether other users may access this agent.
+
+        2026-09-27: sharing no longer stamps the sharer's tenant — the row's
+        attribution (set at creation / on the resource-acl face) is the sole
+        authority, and re-stamping would silently claim admin-created
+        unattributed rows into the sharer's tenant.
+        """
         existing = self._repos.agent_repo.get(agent_id)
         if existing is None:
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
@@ -1132,9 +1158,13 @@ class AgentManager:
                     self.persist_harness_config(agent_id, new_cfg)
             return out
 
-        # Legacy / incomplete row: classic Octop layout only (not scoped create default).
-        out = self._paths.ensure_agent_workspace(agent_id)
-        if persist_if_missing and self._repos.agent_repo.get(agent_id) is not None:
+        # Default layout is tenant-scoped (T2-3): orgs/<org>/agents/<id> for
+        # tenant agents, shared/agents/<id> for platform agents, with the
+        # legacy flat agents/<id> adopted when it already exists.
+        row = self._repos.agent_repo.get(agent_id)
+        org_id = getattr(row, "org_id", None) if row is not None else None
+        out = self._paths.ensure_agent_workspace(agent_id, org_id=org_id)
+        if persist_if_missing and row is not None:
             new_cfg = dict(cfg)
             new_cfg["workspace_dir"] = str(out.resolve())
             self.persist_harness_config(agent_id, new_cfg)
@@ -1330,6 +1360,9 @@ class AgentManager:
         """Resume a paused HITL interrupt for *thread_id*."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        from octop.infra.agents.harness_resume_patch import resume_mcp_configurable  # noqa: PLC0415
+
+        extra_configurable = resume_mcp_configurable(self.default_mcp_servers(agent_id))
         async with (
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
@@ -1337,7 +1370,7 @@ class AgentManager:
             self._apply_pending_bootstrap_graph_refresh(agent_id)
             with hitl_thread_scope(thread_id):
                 async for chunk in self._harness_manager.resume_hitl(
-                    agent_id, thread_id, decisions
+                    agent_id, thread_id, decisions, extra_configurable=extra_configurable
                 ):
                     yield chunk
             self._apply_pending_bootstrap_graph_refresh(agent_id)
@@ -1498,7 +1531,10 @@ class AgentManager:
         self._connector_user_override[agent_id] = uid
         try:
             svc = self._connector_svc
-            for inst in self._repos.connector_repo.list_visible(uid):
+            authz = resolve_authz_context(self._repos.user_repo, self._repos.org_repo, uid)
+            for inst in self._repos.connector_repo.list_visible(
+                uid, org_id=authz.org_id, role_keys=authz.role_filter
+            ):
                 if inst.status != "active":
                     continue
                 await svc.ensure_fresh_credentials(inst.instance_id, inst.kind)
@@ -1520,14 +1556,41 @@ class AgentManager:
 
     def invalidate_mcp_tool_cache(self, user_id: int | None = None) -> None:
         """Drop cached custom MCP tools (one user, or all users when ``user_id`` is None)."""
+        expiry_store = getattr(self, "_mcp_token_expiry", None)
         if user_id is None:
             self._mcp_tool_cache.clear()
             self._mcp_tool_cache_locks.clear()
+            if expiry_store is not None:
+                expiry_store.clear()
             return
         for cache_key in [k for k in self._mcp_tool_cache if k[0] == user_id]:
             del self._mcp_tool_cache[cache_key]
         for lock_key in [k for k in self._mcp_tool_cache_locks if k[0] == user_id]:
             del self._mcp_tool_cache_locks[lock_key]
+        if expiry_store is not None:
+            for exp_key in [k for k in expiry_store if k[0] == user_id]:
+                del expiry_store[exp_key]
+
+    def _mcp_delegation_expiring(
+        self, user_id: int | None, server_name: str, agent: Any = None
+    ) -> bool:
+        """T3 pluggable hook — implementation in octop.infra.agents.mcp_token_refresh.
+
+        True when the mounted delegated token enters the refresh margin
+        (per-agent by construction, review 2026-09-26 P1-5). Lazy import;
+        deleting the module together with this delegation restores community
+        behaviour verbatim (no token self-heal on long-running chats).
+        """
+        from octop.infra.agents.mcp_token_refresh import delegation_expiring as _impl
+
+        return _impl(getattr(self, "_mcp_token_expiry", None) or {}, user_id, server_name, agent)
+
+    @staticmethod
+    def _replace_server_mcp_tools(agent: Any, server_name: str, tools: list[Any]) -> None:
+        """T3 pluggable hook — implementation in octop.infra.agents.mcp_token_refresh."""
+        from octop.infra.agents.mcp_token_refresh import replace_server_tools as _impl
+
+        _impl(agent, server_name, tools)
 
     def mcp_server_labels_for_user(self, user_id: int) -> dict[str, str]:
         labels: dict[str, str] = {}
@@ -1625,6 +1688,12 @@ class AgentManager:
             ]
             for key in stale:
                 del self._mcp_tool_cache[key]
+            from octop.infra.connectors.delegation import spec_token_exp
+
+            expiry_store = getattr(self, "_mcp_token_expiry", None)
+            if expiry_store is None:
+                expiry_store = self._mcp_token_expiry = {}
+            expiry_store[(user_id, server_name)] = spec_token_exp(spec)
             logger.info(
                 "mcp tool cache store user=%s server=%s fingerprint=%s tools=%d",
                 user_id,
@@ -1694,15 +1763,26 @@ class AgentManager:
 
         tool_set: frozenset[str] = getattr(agent, "_mcp_tool_name_set", frozenset())
         missing_tools = [n for n in names if not any(t.startswith(f"{n}_") for t in tool_set)]
+        # Delegated-identity tokens are short-lived (TTL 30 min) and mcp-hub
+        # rejects expired ones on every request. A long-running chat must swap
+        # the underlying connection before that happens: once a mounted
+        # server's token enters the refresh margin, reload its tools with a
+        # freshly minted token (new fingerprint -> cache auto-invalidates).
+        expiring_tools = [
+            n
+            for n in names
+            if n not in missing_tools and self._mcp_delegation_expiring(uid, n, agent=agent)
+        ]
         logger.info(
-            "prepare_chat_mcp agent=%s connector_user_id=%s requested=%s tool_count=%d missing=%s",
+            "prepare_chat_mcp agent=%s connector_user_id=%s requested=%s tool_count=%d missing=%s expiring=%s",
             agent_id,
             connector_user_id,
             names,
             len(tool_set),
             missing_tools,
+            expiring_tools,
         )
-        if not missing_tools:
+        if not missing_tools and not expiring_tools:
             matched = sorted(t for t in tool_set if any(t.startswith(f"{n}_") for n in names))
             logger.info(
                 "prepare_chat_mcp agent=%s: MCP already ready, matching_tools=%s",
@@ -1713,10 +1793,29 @@ class AgentManager:
 
         custom_configs: dict[str, Any] = {}
         if uid is not None:
-            custom_configs = self._connector_svc.custom_harness_configs(uid)
+            # Resolve the OWNER's authz: injected tools mount the owner's
+            # connectors, so the owner's tenant/role scope must bound them.
+            # Tolerant lookup — _repos is always present in production but
+            # partial test doubles build the manager via ``object.__new__``;
+            # ``authz=None`` there keeps the legacy unfiltered path.
+            repos = getattr(self, "_repos", None)
+            authz = (
+                resolve_authz_context(repos.user_repo, repos.org_repo, uid)
+                if repos is not None and getattr(repos, "user_repo", None) is not None
+                else None
+            )
+            custom_configs = self._connector_svc.custom_harness_configs(
+                uid,
+                authz=authz,
+            )
 
         custom_missing = [n for n in missing_tools if n in custom_configs]
         builtin_missing = [n for n in missing_tools if n not in custom_configs]
+        # Token-refresh reloads: servers whose mounted tools sit on a
+        # connection with an expiring delegated token (they are already
+        # mounted, hence not "missing") — swapped in via replace, because
+        # append_mcp_tools dedupes by name and would keep the stale ones.
+        custom_expiring = [n for n in expiring_tools if n in custom_configs]
 
         if custom_missing and uid is not None:
             for name in custom_missing:
@@ -1744,11 +1843,43 @@ class AgentManager:
                         continue
                 agent.config.mcp_server_configs[name] = dict(spec)
 
+        if custom_expiring and uid is not None:
+            logger.info(
+                "prepare_chat_mcp agent=%s: delegated token near expiry, refreshing %s",
+                agent_id,
+                custom_expiring,
+            )
+            for name in custom_expiring:
+                spec = custom_configs[name]
+                if not isinstance(spec, dict) or not spec.get("transport"):
+                    continue
+                try:
+                    tools = await self._get_or_load_mcp_tools(uid, name, spec)
+                except Exception:
+                    logger.exception(
+                        "prepare_chat_mcp agent=%s: token-refresh reload failed for %s",
+                        agent_id,
+                        name,
+                    )
+                    continue
+                if not tools:
+                    continue
+                try:
+                    self._replace_server_mcp_tools(agent, name, tools)
+                    agent.config.mcp_server_configs[name] = dict(spec)
+                except Exception:
+                    logger.exception(
+                        "prepare_chat_mcp agent=%s: token-refresh swap failed for %s",
+                        agent_id,
+                        name,
+                    )
+
         gateway_missing: list[str] = []
         if builtin_missing and uid is not None:
             gateway_names = gateway_mcp_server_names(
                 connector_repo=self._repos.connector_repo,
                 user_id=uid,
+                authz=resolve_authz_context(self._repos.user_repo, self._repos.org_repo, uid),
             )
             gateway_missing = [n for n in builtin_missing if n in gateway_names]
             builtin_missing = [n for n in builtin_missing if n not in gateway_names]
@@ -1863,7 +1994,8 @@ class AgentManager:
         in-process injection at the end of ``_post_start_agent``.
         """
         repo = self._repos.connector_repo
-        for inst in repo.list_visible(user_id):
+        authz = resolve_authz_context(self._repos.user_repo, self._repos.org_repo, user_id)
+        for inst in repo.list_visible(user_id, org_id=authz.org_id, role_keys=authz.role_filter):
             if inst.status != "active" or inst.mcp_server_name not in server_names:
                 continue
             try:
@@ -2220,12 +2352,16 @@ class AgentManager:
             mcp_servers=dump_id_list(normalized),
         )
 
+    # visible/assignable scope methods live in octop.infra.agents.visibility
+    # (isolated module, upstream-merge safe); they take the manager instance
+    # as first parameter to reuse the repo/connector wiring below.
+
     def validate_knowledge_base_ids(self, user_id: int, knowledge_base_ids: list[str]) -> list[str]:
         """Normalize ids and ensure each knowledge base is visible to *user_id*."""
         normalized = skill_package_ids_list({"skill_package_ids": knowledge_base_ids})
         if not normalized:
             return []
-        visible = {base.id for base in self._repos.knowledge_repo.list_visible(user_id)}
+        visible = {base.id for base in visible_knowledge_bases(self, user_id)}
         unknown = [kb_id for kb_id in normalized if kb_id not in visible]
         if unknown:
             raise OctopError(
@@ -2240,7 +2376,13 @@ class AgentManager:
         if not normalized:
             return []
         try:
-            return list(self._connector_svc.validate_mcp_servers_for_user(user_id, normalized))
+            return list(
+                self._connector_svc.validate_mcp_servers_for_user(
+                    user_id,
+                    normalized,
+                    resolve_authz_context(self._repos.user_repo, self._repos.org_repo, user_id),
+                )
+            )
         except ValueError as exc:
             raise OctopError(ErrorCode.CONNECTOR_NOT_BOUND, str(exc)) from exc
 
@@ -2723,7 +2865,7 @@ class AgentManager:
     ) -> Any:
         if cfg is None:
             cfg = self._agent_config_dict(row)
-        backend_spec = cfg.get("backend")
+        backend_spec = normalize_backend_config(cfg.get("backend"))
         if workspace_dir is None:
             workspace_dir = self.resolve_workspace_dir(row.agent_id)
         if backend_spec is None:
@@ -3128,11 +3270,18 @@ class AgentManager:
 
         knowledge_tools: list[Any] = []
         if not team_host:
+            # user_repo / org_repo MUST ride along: the search_knowledge tool
+            # re-derives per-caller visibility (tenancy + role filter) at query
+            # time. Omitting them degrades every non-admin caller to the legacy
+            # per-user branch, where tenant-scoped shared knowledge bases are
+            # invisible and retrieval silently returns no passages.
             knowledge_tools = build_knowledge_tools(
                 SimpleNamespace(
                     knowledge_repo=self._repos.knowledge_repo,
                     settings_repo=self._repos.settings_repo,
                     provider_repo=self._repos.provider_repo,
+                    user_repo=self._repos.user_repo,
+                    org_repo=self._repos.org_repo,
                 )
             )
 
@@ -3140,10 +3289,15 @@ class AgentManager:
         if not team_host and self._config.capabilities.mobile.enabled:
             from octop.infra.mobile.tools import build_mobile_tools  # noqa: PLC0415
 
+            def _agent_org_lookup(aid: str) -> str | None:
+                mrow = self._repos.agent_repo.get(aid)
+                return getattr(mrow, "org_id", None) if mrow is not None else None
+
             mobile_tools = build_mobile_tools(
                 self._config,
                 user_repo=self._repos.user_repo,
                 paths=self.paths,
+                agent_org_lookup=_agent_org_lookup,
             )
 
         from octop_harness.plugins import PluginRegistry, build_plugin_tools  # noqa: PLC0415
@@ -3283,6 +3437,7 @@ class AgentManager:
                     agent_id=row.agent_id,
                     agent_user_id=row.user_id,
                     config=self._config,
+                    authz=resolve_authz_context(self._repos.user_repo, self._repos.org_repo, uid),
                 )
             elif row.user_id is None:
                 logger.warning(
@@ -3404,6 +3559,15 @@ class AgentManager:
         applied = self._merge_agently_write_interrupts(
             applied, self._connector_uid_for(row) if not team_host else None
         )
+        # Shared-agent workspace privacy (pluggable module:
+        # infra/agents/shared_agent_privacy.py) — a cross-tenant ('*') agent
+        # runs as one harness instance sharing a single workspace, so harness
+        # memory recall and the .octop sessions JSONL leak across tenants
+        # (verification round 11). Fail-close both for shared agents only.
+        if shared_agent_privacy.is_shared_agent_row(row):
+            applied = shared_agent_privacy.apply_shared_agent_privacy(
+                applied, supported_fields=_HARNESS_AGENT_CONFIG_FIELDS
+            )
         interrupt_on = apply_session_bypass(applied.interrupt_on, self._hitl_session_store)
         if interrupt_on is not applied.interrupt_on:
             applied = replace(applied, interrupt_on=interrupt_on)

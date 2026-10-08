@@ -211,6 +211,22 @@ export const connectorsApi = {
         : undefined,
     }),
 
+  /**
+   * Connectors the expert's *owner* may attach — the same scope the save
+   * enforces. Use this for composer-default pickers; `listInstances` is the
+   * viewer's own listing, so an admin editing someone else's expert would see
+   * connectors the owner cannot attach (save then fails with CONNECTOR_NOT_BOUND).
+   * Omit `agentId` for an expert about to be created (owner = caller).
+   */
+  listAssignable: (agentId?: string) =>
+    request<ConnectorInstance[]>(
+      agentId
+        ? `/connector-instances/assignable?agent_id=${encodeURIComponent(
+            agentId,
+          )}`
+        : "/connector-instances/assignable",
+    ),
+
   getInstance: (instanceId: string) =>
     request<ConnectorInstanceDetail>(
       `/connector-instances/${encodeURIComponent(instanceId)}`,

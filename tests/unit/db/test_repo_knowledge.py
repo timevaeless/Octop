@@ -50,7 +50,7 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 20
+    assert v >= 20
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols
@@ -382,3 +382,20 @@ def test_delete_folder_is_case_sensitive(repo: KnowledgeRepo, owner_id: int) -> 
 
     assert {row.path for row in removed} == {"Docs", "Docs/upper.txt"}
     assert repo.get_document(survivor) is not None
+
+
+def test_create_base_persists_org_id_both_branches(
+    repo: KnowledgeRepo, owner_id: int
+) -> None:
+    """Review 2026-09-26 P0-1: the org_id column must be written at create."""
+    kb = repo.create_base(owner_user_id=owner_id, name="Docs", org_id="org-a")
+    assert repo.get_base(kb.id) is not None
+    assert repo.get_base(kb.id).org_id == "org-a"
+
+    kb2 = repo.create_base(
+        owner_user_id=owner_id, name="Tiny", max_documents=2, org_id="org-b"
+    )
+    assert repo.get_base(kb2.id).org_id == "org-b"
+
+    platform = repo.create_base(owner_user_id=owner_id, name="Platform")
+    assert repo.get_base(platform.id).org_id is None

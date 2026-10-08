@@ -3,6 +3,8 @@
 export type PermissionHolder = {
   role: "admin" | "user" | string;
   permissions?: string[] | null;
+  /** Ability-package keys (mirrors the token's ``rls`` claim). */
+  role_keys?: string[] | null;
 };
 
 /** Any-of module keys, or ``"admin"`` for role-only. */
@@ -39,9 +41,11 @@ export const NAV_PERMISSIONS = {
   "remote-phone": PERM.mobile,
   acp: "admin",
   "admin-users": PERM.usersPage,
+  "admin-roles": "admin",
   models: PERM.modelsPage,
   "admin-storage": PERM.storage,
   "admin-plugins": PERM.plugins,
+  "admin-mcp-catalog": "admin",
   "admin-security": PERM.securityPage,
   "admin-advanced": PERM.advancedPage,
 } as const satisfies Record<string, PermissionKeys>;
@@ -109,7 +113,21 @@ export function navAllowed(
   user: PermissionHolder | null | undefined,
   navKey: NavPermissionKey,
 ): boolean {
+  if (navKey === "admin-roles") return canAccessRolesPage(user);
   return canAccessKeys(user, NAV_PERMISSIONS[navKey]);
+}
+
+/**
+ * Roles/authorization page gate (028): platform admins always; a plain user
+ * holding the ``org_admin`` package gets in too — the page renders only the
+ * member-roster tab for them (the other tabs' backends are require_admin).
+ */
+export function canAccessRolesPage(
+  user: PermissionHolder | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+  return (user.role_keys ?? []).includes("org_admin");
 }
 
 export function userCanKey(
@@ -127,6 +145,10 @@ export function userCanKey(
 export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   if (pathname.startsWith("/admin/users") || pathname === "/admin/sso") {
     return PERM.usersPage;
+  }
+  if (pathname.startsWith("/admin/roles")) {
+    // Authorization control plane: platform admin only.
+    return "admin";
   }
   if (
     pathname.startsWith("/admin/models") ||
@@ -156,6 +178,10 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
     pathname.startsWith("/admin/updates")
   ) {
     return PERM.advancedPage;
+  }
+  if (pathname.startsWith("/admin/mcp-catalog")) {
+    // MCP catalog control plane: platform admin only (backend require_admin).
+    return "admin";
   }
   if (pathname.startsWith("/admin/")) {
     return "admin";
@@ -235,6 +261,11 @@ export function canAccessPath(
   user: PermissionHolder | null | undefined,
   pathname: string,
 ): boolean {
+  if (pathname.startsWith("/admin/roles")) return canAccessRolesPage(user);
+  // Tenant MCP catalog: same gate as the roles page (platform admin or the
+  // org_admin package holder) — it is the tenant admin's MCP surface.
+  if (pathname.startsWith("/admin/tenant-mcp"))
+    return canAccessRolesPage(user);
   const req = pathPermissionKeys(pathname);
   if (req === null) return true;
   return canAccessKeys(user, req);

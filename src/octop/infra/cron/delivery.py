@@ -250,9 +250,17 @@ class CronDeliveryService:
         user_row = self._repos.user_repo.get(session.user_id)
         is_admin = str(getattr(user_row, "role", "") or "") == "admin"
         knowledge_repo = self._repos.knowledge_repo
-        bases = (
-            knowledge_repo.list_all() if is_admin else knowledge_repo.list_visible(session.user_id)
-        )
+        if is_admin:
+            bases = knowledge_repo.list_all()
+        else:
+            from octop.infra.users.context import authz_binding
+
+            with authz_binding(
+                self._repos.user_repo, self._repos.org_repo, session.user_id
+            ) as authz:
+                bases = knowledge_repo.list_visible(
+                    session.user_id, org_id=authz.org_id, role_keys=authz.role_filter
+                )
         locale = resolve_user_locale(
             user_repo=self._repos.user_repo,
             user_id=session.user_id,

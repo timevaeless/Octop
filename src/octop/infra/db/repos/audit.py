@@ -19,6 +19,7 @@ class AuditRow:
     action: str
     target: str | None
     payload: str | None
+    org_id: str | None = None
 
     @classmethod
     def from_row(cls, r: DbRow) -> AuditRow:
@@ -29,6 +30,7 @@ class AuditRow:
             action=r["action"],
             target=r["target"],
             payload=r["payload"],
+            org_id=r["org_id"] if "org_id" in r.keys() else None,
         )
 
 
@@ -43,11 +45,20 @@ class AuditRepo:
         action: str,
         target: str | None = None,
         payload: str | None = None,
+        org_id: str | None = None,
     ) -> None:
+        """Append one audit event.
+
+        ``org_id`` is the tenant the action belongs to (T2-6): the acting
+        principal's org for request-layer writes, the *target* org where the
+        handler knows it (admin cross-tenant ops). ``None`` means "no tenant
+        context recorded" (system events), never "all tenants".
+        """
         with self._db.transaction() as conn:
             conn.execute(
-                "INSERT INTO audit_log(ts, actor, action, target, payload) VALUES (?, ?, ?, ?, ?)",
-                (now_ts(), actor, action, target, payload or None),
+                "INSERT INTO audit_log(ts, actor, action, target, payload, org_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (now_ts(), actor, action, target, payload or None, org_id or None),
             )
 
     def system_event(
@@ -55,18 +66,24 @@ class AuditRepo:
         action: str,
         target: str | None = None,
         payload: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Write an audit event with actor = ``_system``."""
-        self.write(actor=ACTOR_SYSTEM, action=action, target=target, payload=payload)
+        self.write(
+            actor=ACTOR_SYSTEM, action=action, target=target, payload=payload, org_id=org_id
+        )
 
     def admin_event(
         self,
         action: str,
         target: str | None = None,
         payload: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Write an audit event with actor = ``_admin``."""
-        self.write(actor=ACTOR_ADMIN, action=action, target=target, payload=payload)
+        self.write(
+            actor=ACTOR_ADMIN, action=action, target=target, payload=payload, org_id=org_id
+        )
 
     def user_event(
         self,
@@ -74,9 +91,12 @@ class AuditRepo:
         action: str,
         target: str | None = None,
         payload: str | None = None,
+        org_id: str | None = None,
     ) -> None:
         """Write an audit event with actor = username."""
-        self.write(actor=username, action=action, target=target, payload=payload)
+        self.write(
+            actor=username, action=action, target=target, payload=payload, org_id=org_id
+        )
 
     def query(
         self,
@@ -84,6 +104,7 @@ class AuditRepo:
         since: int | None = None,
         actor: str | None = None,
         action: str | None = None,
+        org_id: str | None = None,
         limit: int = 100,
     ) -> list[AuditRow]:
         conditions: list[str] = []
@@ -97,6 +118,9 @@ class AuditRepo:
         if action is not None:
             conditions.append("action = ?")
             params.append(action)
+        if org_id is not None:
+            conditions.append("org_id = ?")
+            params.append(org_id)
         sql = "SELECT * FROM audit_log"
         if conditions:
             sql += " WHERE " + " AND ".join(conditions)

@@ -6,9 +6,16 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from octop.infra.utils.tenant_paths import TenantPathLayoutMixin
+
+# T2-3 pluggable hook (octop.infra.utils.tenant_paths): the tenant path plane
+# (orgs/<org>/..., shared/..., adopt-legacy resolution) is mixed in from that
+# module. Deleting it together with the two lines above restores the
+# community flat layout verbatim.
+
 
 @dataclass(frozen=True)
-class PathLayout:
+class PathLayout(TenantPathLayoutMixin):
     root: Path
 
     @classmethod
@@ -78,16 +85,6 @@ class PathLayout:
     def knowledge_dir(self) -> Path:
         """Global knowledge base files: ``~/.octop/knowledge/``."""
         return self.root / "knowledge"
-
-    def agent_workspace(self, agent_id: str) -> Path:
-        """Global agent workspace: ~/.octop/agents/<agent_id>/"""
-        return self.agents_dir / agent_id
-
-    def ensure_agent_workspace(self, agent_id: str) -> Path:
-        """Global agent workspace, mkdir -p."""
-        out = self.agent_workspace(agent_id)
-        out.mkdir(parents=True, exist_ok=True)
-        return out
 
     def ensure_root(self) -> Path:
         self.root.mkdir(parents=True, exist_ok=True)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from octop.infra.db.pool import DatabasePool
@@ -62,6 +63,8 @@ class UserRow:
     login_failed_count: int = 0
     login_locked_until: int = 0
     permissions: builtins.list[str] = field(default_factory=list)
+    default_org_id: str | None = None
+    token_epoch: int = 0
     role_name: str | None = None
     avatar_icon: str | None = None
 
@@ -88,6 +91,12 @@ class UserRow:
             sso_provider_id=r["sso_provider_id"] if "sso_provider_id" in keys else None,
             sso_subject=r["sso_subject"] if "sso_subject" in keys else None,
             permissions=_parse_permissions(r["permissions"] if "permissions" in keys else None),
+            default_org_id=(
+                str(r["default_org_id"]) if r["default_org_id"] not in (None, "") else None
+            )
+            if "default_org_id" in keys
+            else None,
+            token_epoch=int(r["token_epoch"] or 0) if "token_epoch" in keys else 0,
             role_name=role_name or None,
             avatar_icon=avatar_icon or None,
         )
@@ -282,6 +291,97 @@ class UserRepo:
     def set_role(self, user_id: int, role: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("UPDATE users SET role = ? WHERE id = ?", (role, user_id))
+
+    def set_default_org_id(self, user_id: int, org_id: str | None) -> None:
+        with self._db.transaction() as conn:
+            conn.execute("UPDATE users SET default_org_id = ? WHERE id = ?", (org_id, user_id))
+
+    def bump_token_epoch(self, user_id: int) -> int:
+        """Increment ``token_epoch`` and return the new value.
+
+        Called whenever membership / role mapping changes so that outstanding
+        access tokens (which embed the old epoch as the ``ver`` claim) die on
+        their next request. Written dialect-agnostic (no ``RETURNING``) so it
+        works on SQLite too.
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE users SET token_epoch = COALESCE(token_epoch, 0) + 1 WHERE id = ?",
+                (user_id,),
+            )
+            row = conn.execute("SELECT token_epoch FROM users WHERE id = ?", (user_id,)).fetchone()
+            if row is None:
+                return 0
+            value = row["token_epoch"] if isinstance(row, Mapping) else row[0]
+            return int(value)
+
+    def bump_token_epoch_for_org(self, org_id: str) -> int:
+        """Increment ``token_epoch`` for every current member of ``org_id``.
+
+        Tenant-level companion to :meth:`bump_token_epoch`: when a tenant is
+        disabled or deleted, outstanding member tokens carry the org context
+        until natural expiry unless the epoch moves under them. Returns the
+        number of members bumped (dialect-agnostic COUNT, no ``rowcount``).
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE users SET token_epoch = COALESCE(token_epoch, 0) + 1 "
+                "WHERE id IN (SELECT user_id FROM org_memberships WHERE org_id = ?)",
+                (org_id,),
+            )
+            row = conn.execute(
+                "SELECT COUNT(*) FROM org_memberships WHERE org_id = ?", (org_id,)
+            ).fetchone()
+            if row is None:
+                return 0
+            value = row["count"] if isinstance(row, Mapping) else row[0]
+            return int(value)
+
+    def bump_token_epoch_for_role_key(self, org_id: str | None, role_key: str) -> int:
+        """Increment epochs of members whose membership still carries ``role_key``.
+
+        Package-delete companion (2026-09-30 review P1-3): the FK cascades the
+        mapping/grant rows, but ``org_memberships.role_keys`` JSON survives
+        until hydration prunes it — without this, the deleted key keeps riding
+        in the member's ``rls`` claim until the *next* login. Matches the
+        quoted token inside the JSON array, so ``x_user`` cannot hit
+        ``expert_user``. ``org_id=None`` scans every tenant (the platform
+        package delete path — a platform package may be held in any tenant).
+        Returns the number of members bumped.
+        """
+        # LIKE wildcards in role_key must be escaped (review 2026-10-02 P1-8):
+        # platform keys are length-capped but not charset-capped, so a key
+        # containing '%' or '_' would over-match other keys' JSON tokens and
+        # bump members holding a DIFFERENT package. ESCAPE works on both
+        # dialects; the quoted-token shape still prevents ``x_user`` hitting
+        # ``expert_user``.
+        escaped = (
+            role_key.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        )
+        needle = f'%"{escaped}"%'
+        conds = (
+            "role_keys LIKE ? ESCAPE '\\'"
+            if org_id is None
+            else "org_id = ? AND role_keys LIKE ? ESCAPE '\\'"
+        )
+        params: tuple[object, ...] = (
+            (needle,)
+            if org_id is None
+            else (org_id, needle)
+        )
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE users SET token_epoch = COALESCE(token_epoch, 0) + 1 "
+                f"WHERE id IN (SELECT user_id FROM org_memberships WHERE {conds})",
+                params,
+            )
+            row = conn.execute(
+                f"SELECT COUNT(*) FROM org_memberships WHERE {conds}", params
+            ).fetchone()
+            if row is None:
+                return 0
+            value = row["count"] if isinstance(row, Mapping) else row[0]
+            return int(value)
 
     def set_password_hash(self, user_id: int, password_hash: str) -> None:
         with self._db.transaction() as conn:

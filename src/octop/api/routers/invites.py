@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from octop.api.common.client_ip import resolve_client_ip
-from octop.api.deps import get_server, require_permission, sign_token
+from octop.api.deps import get_server, issue_access_token, require_permission
 from octop.api.routers.auth import _user_json
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import User
@@ -56,6 +56,9 @@ class InviteCreateBody(BaseModel):
         ge=MIN_EXPIRES_DAYS,
         le=MAX_EXPIRES_DAYS,
     )
+    # T4-1: optional tenant binding — redeeming the invite lands the user in
+    # this org (source='invite'). Validated (exists & active) by the service.
+    org_id: str | None = Field(default=None, max_length=64)
     role: str | None = Field(
         default=None,
         description="Role-template public id stored on the invite. Applied at redeem time.",
@@ -114,6 +117,7 @@ async def create_invite(
         actor_username=actor.username,
         note=body.note,
         expires_in_days=body.expires_in_days,
+        org_id=body.org_id,
         role_name=role_name,
         role=role_id,
     )
@@ -167,9 +171,8 @@ async def redeem_invite(
     from octop.infra.agents.experts.default_agent import try_bootstrap_default_agent
 
     await try_bootstrap_default_agent(server, user_id=user.id, locale=user.locale)
-    secret = server.services.secret_repo.get("jwt")
     ttl = server.services.config.access_token_ttl_seconds
-    token = sign_token(secret, sub=user.id, uname=user.username, role=user.role, ttl_seconds=ttl)
+    token = issue_access_token(server, user, ttl_seconds=ttl)
     return {
         "access_token": token,
         "token_type": "Bearer",

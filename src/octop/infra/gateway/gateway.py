@@ -229,6 +229,7 @@ class Gateway:
             audit_repo=self._repos.audit_repo,
             agent_repo=self._repos.agent_repo,
             user_repo=self._repos.user_repo,
+            org_repo=self._repos.org_repo,
             connector_repo=self._repos.connector_repo,
             knowledge_repo=self._repos.knowledge_repo,
             settings_repo=self._repos.settings_repo,

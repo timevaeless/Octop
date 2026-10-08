@@ -489,8 +489,13 @@ def _iter_active_connectors(
     svc: Any,
     connector_repo: Any,
     user_id: int,
+    authz: Any = None,
 ) -> Any:
-    for inst in connector_repo.list_visible(user_id):
+    for inst in connector_repo.list_visible(
+        user_id,
+        org_id=authz.org_id if authz is not None else None,
+        role_keys=authz.role_filter if authz is not None else None,
+    ):
         if inst.status != "active":
             continue
         entry = get_catalog_entry(inst.kind)
@@ -511,23 +516,34 @@ def build_mcp_server_configs_for_user(
     agent_user_id: int | None,
     config: OctopConfig,
     log: bool = True,
+    authz: Any = None,
 ) -> dict[str, Any]:
-    """Build harness ``mcp_server_configs`` from a user's active connector instances."""
+    """Build harness ``mcp_server_configs`` from a user's active connector instances.
+
+    ``authz`` (an ``AuthzContext``) applies the tenancy + role ACL to shared
+    connector instances; ``None`` keeps the legacy unfiltered behavior for
+    internal callers that have no user context.
+    """
     import json
     import logging
 
     logger = logging.getLogger(__name__)
     configs: dict[str, Any] = {}
     if log:
+        visible = connector_repo.list_visible(
+            user_id,
+            org_id=authz.org_id if authz is not None else None,
+            role_keys=authz.role_filter if authz is not None else None,
+        )
         logger.info(
             "build_mcp_server_configs agent=%s agent.user_id=%s connector_user_id=%s "
             "connector_instances=%d",
             agent_id,
             agent_user_id,
             user_id,
-            len(connector_repo.list_visible(user_id)),
+            len(visible),
         )
-    for inst, entry, creds in _iter_active_connectors(svc, connector_repo, user_id):
+    for inst, entry, creds in _iter_active_connectors(svc, connector_repo, user_id, authz):
         try:
             if is_inprocess_gateway(entry):
                 # Name-only placeholder: harness skips specs without ``transport``;
@@ -557,7 +573,7 @@ def build_mcp_server_configs_for_user(
         except Exception:
             logger.exception("failed to build MCP spec for instance %s", inst.instance_id)
 
-    custom_configs = svc.custom_harness_configs(user_id)
+    custom_configs = svc.custom_harness_configs(user_id, authz=authz)
     for name, spec in custom_configs.items():
         # Defer loading: placeholder without ``transport`` so harness skips
         # aload at agent start. Tools are injected via prepare_chat_mcp + cache.
@@ -578,15 +594,22 @@ def build_mcp_server_configs_for_user(
     return configs
 
 
-def gateway_mcp_server_names(*, connector_repo: Any, user_id: int) -> set[str]:
+def gateway_mcp_server_names(*, connector_repo: Any, user_id: int, authz: Any = None) -> set[str]:
     """MCP server names of in-process gateway connectors for *user_id*.
+
+    ``authz`` scopes the visible set to the caller's tenant/role scope
+    (tenancy gate); ``None`` keeps the legacy unfiltered behavior.
 
     ``mcp_mode=gateway`` has no HTTP transport: tools are injected from Python
     adapters. ``internal`` aggregators (e.g. QCC) are not included — harness
     loads those via ``/api/internal/mcp``.
     """
     names: set[str] = set()
-    for inst in connector_repo.list_visible(user_id):
+    for inst in connector_repo.list_visible(
+        user_id,
+        org_id=authz.org_id if authz is not None else None,
+        role_keys=authz.role_filter if authz is not None else None,
+    ):
         if inst.status != "active":
             continue
         entry = get_catalog_entry(inst.kind)

@@ -6,6 +6,7 @@ from octop_gateway.models import (
     FileContent,
     GroupContext,
     GroupContextMessage,
+    ImageContent,
     InboundMessage,
     TextContent,
 )
@@ -139,3 +140,42 @@ async def test_group_context_uses_anonymous_labels_instead_of_raw_ids() -> None:
     assert "[群成员2] 你怎么看？" in content
     assert "1468FCD" not in content
     assert "BD552189" not in content
+
+
+@pytest.mark.asyncio
+async def test_vision_image_also_carries_workspace_path_hint() -> None:
+    """Vision-routed images must ALSO expose a text path hint.
+
+    The model may see the pixels via the ``workspace://`` ref, but archive-style
+    tools need the *filename* to build a file reference — only the text hint
+    provides it.
+    """
+
+    class _FakeMediaBackend:
+        async def read(self, path: str) -> bytes:
+            return b"fake-bytes"
+
+    msg = InboundMessage(
+        channel_id="qq-1",
+        channel_type="qq",
+        channel_subject=ChannelSubject(subject_id="chat-1", chat_type="private"),
+        content=[
+            ImageContent(
+                mime_type="image/jpeg",
+                local_path="inbound/1783510288_id-front.jpg",
+            )
+        ],
+        metadata={"sender_id": "bob-id", "sender_name": "Bob"},
+    )
+
+    content = await build_content_from_message(msg, media_backend=_FakeMediaBackend())
+
+    assert isinstance(content, list)
+    text_blocks = [b for b in content if b.get("type") == "text"]
+    image_blocks = [b for b in content if b.get("type") == "image_url"]
+    assert len(image_blocks) == 1
+    assert image_blocks[0]["image_url"]["url"].startswith("workspace://inbound/")
+    hint_texts = [str(b.get("text") or "") for b in text_blocks]
+    assert any("[Attachment]" in t for t in hint_texts)
+    assert any("1783510288_id-front.jpg" in t for t in hint_texts)
+    assert any("inbound/1783510288_id-front.jpg" in t for t in hint_texts)

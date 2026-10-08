@@ -1,0 +1,202 @@
+/* Styles for the Roles & Access admin page. Token-based so both the light and
+   dark application themes stay readable.
+
+   The page itself is wrapped in `layouts/PageShell` (page margin + content
+   card); every tab body is a `.panel` so the vertical rhythm between the
+   stats strip, the toolbar, and the table stays identical across tabs. */
+
+/* Tab body: fills the pane and stacks one vertical column with a uniform gap.
+   Filling matters — a taller-than-pane panel makes the tab pane scroll, which
+   is the scrollbar the list used to drag in. */
+.tabBody {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* Table host: takes whatever height is left so the row area — not the page —
+   absorbs the difference. antd's scroll.y (see useTableArea) does the rest. */
+.tableArea {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+
+  /* 6px instead of the 8px small-table default: the 4px saved per row is what
+     lets a 10-row page fit a laptop-height pane without a scrollbar.
+
+     The selector has to out-weigh antd's own
+     `.octop-table-small .octop-table-tbody >tr >td` (3 classes + element), so
+     it repeats antd's shape rather than relying on one class. */
+  :global(.octop-table)
+    :global(.octop-table-tbody)
+    > :global(tr)
+    > :global(td.octop-table-cell) {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  /* rc-table forces `overflow-y: scroll` on the fixed-header body whenever
+     there is data, so the body always reserves a scrollbar gutter — and the
+     app styles ::-webkit-scrollbar, which makes scrollbars take real space.
+     The result is a blank strip at the right edge of every table even when
+     the rows fit. `auto` reserves the gutter (and the header's matching
+     scrollbar column, which rc-table measures at mount) only when the rows
+     genuinely overflow. */
+  :global(.octop-table-body),
+  :global(.ant-table-body) {
+    overflow-y: auto !important;
+  }
+}
+
+/* Same forced-scrollbar artifact applies to the fixed-header table inside the
+   grant modal, which is not hosted by `.tableArea`. */
+.modalTable {
+  :global(.octop-table-body),
+  :global(.ant-table-body) {
+    overflow-y: auto !important;
+  }
+}
+
+/* Row that was just written by an inline save (user access / resource ACL). */
+.rowHighlight {
+  > td {
+    background-color: var(--fn-bg-success-light);
+    transition: background-color var(--fn-transition-fast, 0.2s ease);
+  }
+}
+
+/* Monospace identifiers: role_key, resource id, job code, org id. */
+.mono {
+  font-family: var(
+    --fn-font-mono,
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace
+  );
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+}
+
+/* Primary line + secondary line inside a single table cell.
+   ``flex-start`` keeps a lone Tag at its intrinsic width — stretching it made
+   the grey 「未授权」 tag span the whole column. */
+.cellStack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Status tags (「含默认角色」/「来源…」) side by side inside a ``cellStack``.
+   They used to stack vertically, costing a third line per row; the column is
+   wide enough to hold both. */
+.cellTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+}
+
+.cellSecondary {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+/* Avatar + name/username stack used by the user list. */
+.userCell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* Primary line of a two-line cell (user / tenant / package name). */
+.cellPrimary {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Toolbar above a table: filters on the left, actions pushed to the right.
+   It also carries the counters, which used to be a separate Statistic strip —
+   the strip cost 74px of height, exactly what pushed a 10-row list past the
+   pane and produced its scrollbar. */
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.toolbarEnd {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-inline-start: auto;
+}
+
+/* Wrapper that keeps an ACL draft editor on one line. */
+.draftEditor {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Edit + delete pair at the end of a table row. The two link buttons are
+   cramped side by side at their default padding, so they are pulled together
+   and pushed to the cell's trailing edge. */
+.rowActions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* ----- grant modal ----- */
+
+/* Section title above the per-tenant membership table. */
+.modalSection {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.modalSectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Separates the membership list from the "grant a package" form. */
+.modalDivider {
+  margin: 16px 0;
+  border-top: 1px solid var(--fn-border-secondary);
+}
+
+.modalFormActions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+/* Small in-modal note under a form field. */
+.modalHint {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}

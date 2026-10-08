@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, 
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from octop.api.common.agent import assert_agent_owner
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.upload_limit import read_upload_capped
 from octop.api.deps import current_user, get_server, require_permission
@@ -21,6 +22,7 @@ from octop.infra.agents.providers.model_flags import (
     is_onnx_local_provider,
     is_vision_model,
 )
+from octop.infra.agents.visibility import assignable_knowledge_bases
 from octop.infra.agents.providers.onnx_catalog import (
     ONNX_PRESET_MODEL_IDS,
     list_onnx_catalog_models,
@@ -145,14 +147,25 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
     return KnowledgeService(server.services)
 
 
-def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any]:
+def _kb_org_id(server: Any, kb_id: str) -> str | None:
+    """Resolve the KB row's tenant id for tenant-scoped file resolution."""
+    try:
+        base = server.services.knowledge_repo.get_base(kb_id)
+    except Exception:  # pragma: no cover - defensive: tenancy lookup must not 500
+        return None
+    return getattr(base, "org_id", None) if base is not None else None
+
+
+def _row_payload(
+    row: Any, *, has_original: bool | None = None, org_id: str | None = None
+) -> dict[str, Any]:
     payload = asdict(row)
     payload["document_id"] = row.id
     if has_original is None:
         if getattr(row, "is_dir", False):
             has_original = False
         else:
-            has_original = document_path(row.kb_id, row.id, row.filename).is_file()
+            has_original = document_path(row.kb_id, row.id, row.filename, org_id=org_id).is_file()
     payload["has_original"] = bool(has_original)
     return payload
 
@@ -523,9 +536,46 @@ async def list_bases(
     return [
         _base_payload(server, base)
         for base in _knowledge_service(server).list_visible_bases(
-            actor_user_id=user.id, is_admin=_is_admin(user)
+            actor_user_id=user.id,
+            is_admin=_is_admin(user),
+            org_id=user.org_id,
+            role_keys=None if _is_admin(user) else list(user.role_keys),
         )
     ]
+
+
+@router.get(
+    "/assignable",
+    summary="List knowledge bases attachable to an expert",
+)
+async def list_assignable_bases(
+    agent_id: str | None = Query(
+        None,
+        description=(
+            "Agent whose owner's scope to list; omit for an agent about to be "
+            "created (owner = caller)"
+        ),
+    ),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(current_user),
+) -> list[dict[str, Any]]:
+    """Bases the expert's **owner** may attach — the scope saving enforces.
+
+    Deliberately not ``list_bases``: that one is a management view and hands
+    platform admins ``list_all()``, which offers rows the save-time check
+    (``AgentManager.validate_knowledge_base_ids``, scoped to the agent's owner)
+    then rejects with ``KNOWLEDGE_NOT_FOUND``. The composer-defaults picker
+    reads this endpoint instead so shown always equals accepted.
+    """
+    assert server.app_runtime is not None
+    registry = server.app_runtime.agent_registry
+    if agent_id is not None:
+        row = registry.get_row(agent_id)
+        if row is None:
+            raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+        assert_agent_owner(row, user)
+    bases = assignable_knowledge_bases(registry, agent_id, user_id=user.id)
+    return [_base_payload(server, base) for base in bases or []]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Create a knowledge base")
@@ -538,6 +588,10 @@ async def create_base(
     locale = resolve_request_locale(request)
     try:
         _require_usable(server, request)
+        # 2026-09-27 attribution hook (pluggable: resource_attribution):
+        # platform-admin KBs stay unattributed until assigned.
+        from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+
         base = _knowledge_service(server).create_base(
             owner_user_id=user.id,
             name=body.name.strip(),
@@ -546,6 +600,9 @@ async def create_base(
             shared=body.shared,
             icon_name=body.icon_name.strip(),
             max_documents=body.max_documents if body.max_documents is not None else MAX_DOCS_PER_KB,
+            # 2026-09-27 attribution hook (pluggable: resource_attribution):
+            # platform-admin KBs stay unattributed until assigned.
+            org_id=_creator_org_id(user),
         )
         return _base_payload(server, base)
     except Exception as exc:
@@ -558,7 +615,10 @@ async def default_open_bases(
     user: User = Depends(current_user),
 ) -> dict[str, list[str]]:
     bases = _knowledge_service(server).list_visible_bases(
-        actor_user_id=user.id, is_admin=_is_admin(user)
+        actor_user_id=user.id,
+        is_admin=_is_admin(user),
+        org_id=user.org_id,
+        role_keys=None if _is_admin(user) else list(user.role_keys),
     )
     return {
         "knowledge_base_ids": [
@@ -650,7 +710,7 @@ async def list_documents(
 ) -> list[dict[str, Any]]:
     try:
         return [
-            _row_payload(document)
+            _row_payload(document, org_id=_kb_org_id(server, kb_id))
             for document in _knowledge_service(server).list_documents(
                 kb_id, actor_user_id=user.id, is_admin=_is_admin(user), prefix=prefix
             )
@@ -677,7 +737,7 @@ async def create_folder(
         folder = _knowledge_service(server).create_folder(
             kb_id, actor_user_id=user.id, path=body.path, is_admin=_is_admin(user)
         )
-        return _row_payload(folder)
+        return _row_payload(folder, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -710,7 +770,7 @@ async def create_text_document(
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, document.id)
-        return _row_payload(document)
+        return _row_payload(document, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -748,7 +808,7 @@ async def upload_document(
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, document.id)
-        return _row_payload(document)
+        return _row_payload(document, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -851,7 +911,7 @@ async def update_text_document(
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, doc_id)
-        return _row_payload(document)
+        return _row_payload(document, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -876,7 +936,7 @@ async def rename_document(
             new_name=body.new_name.strip(),
             is_admin=_is_admin(user),
         )
-        return _row_payload(document)
+        return _row_payload(document, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -923,7 +983,7 @@ async def reindex_document(
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, doc_id)
-        return _row_payload(document)
+        return _row_payload(document, org_id=_kb_org_id(server, kb_id))
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server

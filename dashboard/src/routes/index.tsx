@@ -22,12 +22,17 @@ const ModelsPage = lazy(() => import("../pages/Settings/Models"));
 
 // Lazy-loaded pages — Admin
 const OctopAdminUsersPage = lazy(() => import("../pages/Admin/Users"));
+const OctopAdminRolesPage = lazy(() => import("../pages/Admin/Roles"));
 const AdminSecurityPage = lazy(() => import("../pages/Settings/Security"));
 const AdvancedSettingsPage = lazy(
   () => import("../pages/Settings/AdvancedSettings"),
 );
 const AdminStoragePage = lazy(() => import("../pages/Admin/Storage"));
 const AdminPluginsPage = lazy(() => import("../pages/Admin/Plugins"));
+const AdminMcpCatalogPage = lazy(() => import("../pages/Admin/McpCatalog"));
+const TenantMcpCatalogPage = lazy(
+  () => import("../pages/Admin/McpCatalog/TenantMcpCatalog"),
+);
 const AgentConfigPage = lazy(() => import("../pages/Agent/Config"));
 
 // Misc
@@ -88,8 +93,10 @@ export const pathToKey: Record<string, string> = {
   "/admin/models": "models",
   // Admin
   "/admin/users": "admin-users",
+  "/admin/roles": "admin-roles",
   "/admin/backend": "admin-storage",
   "/admin/plugins": "admin-plugins",
+  "/admin/mcp-catalog": "admin-mcp-catalog",
   "/admin/advanced": "admin-advanced",
   "/admin/security": "admin-security",
 };
@@ -217,6 +224,7 @@ export const routeConfigs: RouteConfig[] = [
 
   // Admin (RequirePermission wrapper applied in MainLayout)
   { path: "/admin/users", element: <OctopAdminUsersPage /> },
+  { path: "/admin/roles", element: <OctopAdminRolesPage /> },
   {
     path: "/admin/sso",
     element: <Navigate to="/admin/users?tab=oidc" replace />,
@@ -233,6 +241,8 @@ export const routeConfigs: RouteConfig[] = [
   },
   { path: "/admin/agents", element: <Navigate to="/admin/users" replace /> },
   { path: "/admin/plugins", element: <AdminPluginsPage /> },
+  { path: "/admin/mcp-catalog", element: <AdminMcpCatalogPage /> },
+  { path: "/admin/tenant-mcp", element: <TenantMcpCatalogPage /> },
   { path: "/admin/advanced", element: <AdvancedSettingsPage /> },
   { path: "/admin/security", element: <AdminSecurityPage /> },
   {

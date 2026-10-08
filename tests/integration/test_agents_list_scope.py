@@ -64,6 +64,22 @@ async def test_non_admin_cannot_use_scope_all(env) -> None:
     assert r.status_code == 403
 
 
+async def test_agent_listing_reports_org_and_allowed_roles(env) -> None:
+    """The resource-ACL tab reads tenancy/ACL off the listing — a stored ACL
+    must survive a refresh instead of rendering as "unknown" (regression:
+    ``_row_dict`` used to omit both fields)."""
+    c, srv, admin_auth = env
+    srv.services.agent_repo.create(agent_id="acl-echo-test", user_id=None, name="acl-echo")
+    srv.services.agent_repo.set_allowed_roles("acl-echo-test", ["finance_operator"])
+
+    r = await c.get("/api/agents?scope=all", headers=admin_auth)
+    assert r.status_code == 200
+    row = next(x for x in r.json() if x["agent_id"] == "acl-echo-test")
+    assert row["allowed_roles"] == ["finance_operator"]
+    # ownerless agent → org_id serializes as null (platform-wide), but the key exists
+    assert "org_id" in row and row["org_id"] is None
+
+
 async def test_non_admin_cannot_get_other_users_agent(env) -> None:
     c, _srv, admin_auth = env
     guest_auth = await create_user(c, admin_auth, username="guest_get")

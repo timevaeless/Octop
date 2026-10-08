@@ -14,6 +14,9 @@ export interface PublishedExpert {
   created_at: string;
   updated_at: string;
   welcome_message?: { zh?: string; en?: string };
+  default_knowledge_base_ids?: string[];
+  default_mcp_servers?: string[];
+  default_skill_package_ids?: string[];
   quick_prompts?: {
     title?: { zh?: string; en?: string };
     description?: { zh?: string; en?: string };

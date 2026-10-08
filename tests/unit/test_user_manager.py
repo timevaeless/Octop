@@ -476,3 +476,74 @@ async def test_boot_loads_users(tmp_path: Path):
         assert not hasattr(user, "agent_manager") or True  # just verify no crash
     finally:
         await manager.shutdown_all()
+
+
+# ----- defect #4: stale cached User loses tenant context (invite path) -----
+
+
+async def test_authenticate_rebuilds_stale_cached_user(manager: UserManager):
+    """A cached User predating the tenant binding must not survive login.
+
+    Simulates the invite-redeem shape: the cache holds an org-less placeholder
+    while the DB row already carries default_org_id + membership. authenticate
+    must rebuild from the fresh row (aligned with the SSO path), not return
+    the stale cache entry.
+    """
+    await manager.create(username="alice", password="TestPass12", role=Role.USER)
+    assert manager.get("alice") is not None
+    assert manager.get("alice").org_id is None  # stale cache (pre-binding)
+
+    # Bind tenant directly in DB, bypassing the manager (like invite redeem does).
+    from octop.infra.db.repos.orgs import OrgRepo
+
+    orgs = OrgRepo(manager._services.db)
+    assert orgs.create_org(org_id="acme", name="Acme") is not None
+    with manager._services.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO org_memberships("
+            "user_id, org_id, role_keys, status, is_primary, source, created_at, updated_at"
+            ") VALUES (?, 'acme', '[]', 'active', 0, 'invite', 0, 0)",
+            (manager.get("alice").id,),
+        )
+        conn.execute(
+            "UPDATE users SET default_org_id = 'acme' WHERE id = ?",
+            (manager.get("alice").id,),
+        )
+
+    user = await manager.authenticate("alice", "TestPass12")
+    assert user is not None
+    assert user.org_id == "acme"  # rebuilt from DB, not the stale cache
+    assert manager.get("alice").org_id == "acme"  # cache refreshed too
+
+
+async def test_create_from_invite_registers_user_with_tenant_context(
+    manager: UserManager,
+):
+    """create_from_invite must leave a cache entry carrying org context."""
+    import time
+
+    from octop.infra.db.repos.invites import InviteRepo
+    from octop.infra.db.repos.orgs import OrgRepo
+
+    admin = await manager.create(
+        username="root", password="RootPass12", role=Role.ADMIN
+    )
+    orgs = OrgRepo(manager._services.db)
+    assert orgs.create_org(org_id="acme", name="Acme") is not None
+    invites = InviteRepo(manager._services.db)
+    invites.create(
+        code="InviteOrg1",
+        created_by=admin.id,
+        expires_at=int(time.time()) + 86400,
+        note="defect-4",
+        org_id="acme",
+    )
+
+    user = await manager.create_from_invite(
+        code="InviteOrg1", username="invitee", password="NewbiePass12"
+    )
+    assert user.org_id == "acme"
+    assert user.role_keys == []  # invite grants membership, no ability keys
+    cached = manager.get("invitee")
+    assert cached is not None
+    assert cached.org_id == "acme"

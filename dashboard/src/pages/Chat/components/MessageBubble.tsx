@@ -16,10 +16,6 @@ import {
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import type { ChatAttachment, ChatMessage } from "../hooks/useChat";
-import UserMessageComposerTags, {
-  hasUserComposerTags,
-  type ComposerTagLookups,
-} from "./UserMessageComposerTags";
 import { deriveMessageContent } from "../utils/messageContent";
 import { inferKindFromNameAndMime } from "../utils/chatAttachments";
 import { ChatMediaPlayer } from "./ChatMediaPlayer";
@@ -37,6 +33,7 @@ import { prepareSpeechText } from "../../../utils/plainTextForSpeech";
 import {
   chatStreamErrorAction,
   formatChatStreamError,
+  isModelRetryFailureText,
 } from "../../../utils/chatStreamError";
 import { MessageFileCard } from "./MessageFileCard";
 import AskQuestionCard from "./AskQuestionCard";
@@ -79,7 +76,6 @@ import type { ToolRendererRegistration } from "../../../plugins/toolRenderers/ty
 interface MessageBubbleProps {
   message: ChatMessage;
   agentId?: string | null;
-  composerLookups?: ComposerTagLookups;
   onRegenerate?: (messageId: string) => void;
   onEditUserMessage?: (messageId: string, newText: string) => void;
   onForkAssistantMessage?: (messageId: string) => void;
@@ -531,7 +527,6 @@ export function ToolDetailsInline({
 function MessageBubble({
   message,
   agentId = null,
-  composerLookups,
   onRegenerate,
   onEditUserMessage,
   onForkAssistantMessage,
@@ -664,11 +659,18 @@ function MessageBubble({
   }
 
   const isUser = message.role === "user";
-  const showUserComposerTags =
-    isUser && !isEditing && hasUserComposerTags(message.composerContext);
   const isStreaming = message.status === "streaming";
   const hasToolData = !!message.toolData;
-  const isError = message.status === "error";
+  // Only backend retry-failure notices ("Model call failed after …") may look
+  // like errors when the message itself isn't marked as one — prose answers
+  // that merely *mention* an error (e.g. a KB tool returning HTTP 401) are
+  // legitimate content, not failures.
+  const looksLikeStreamError =
+    !isUser &&
+    !hasToolData &&
+    !isStreaming &&
+    (message.status === "error" || isModelRetryFailureText(textContent));
+  const isError = message.status === "error" || looksLikeStreamError;
   const errorBodyText = isError
     ? formatChatStreamError(textContent, t)
     : textContent;
@@ -762,18 +764,12 @@ function MessageBubble({
     <div
       className={`${styles.messageBubble} ${
         isUser ? styles.userBubble : styles.assistantBubble
-      } ${showUserComposerTags ? styles.userBubbleWithTags : ""} ${
-        isError ? styles.errorBubble : ""
-      } ${compact ? styles.compactBubble : ""}`}
+      } ${isError ? styles.errorBubble : ""} ${
+        compact ? styles.compactBubble : ""
+      }`}
     >
       {!isUser && senderAvatar ? (
         <div className={styles.avatarCol}>{senderAvatar}</div>
-      ) : null}
-      {showUserComposerTags ? (
-        <UserMessageComposerTags
-          context={message.composerContext}
-          lookups={composerLookups}
-        />
       ) : null}
       <div className={styles.bubbleContent}>
         {isUser ? (

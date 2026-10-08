@@ -2,7 +2,7 @@
   line-height: 1.7;
   word-break: break-word;
   font-size: 15px;
-  color: var(--fn-text-primary);
+  color: var(--fn-markdown-text, var(--fn-text-primary));
 
   @media (max-width: 767px) {
     font-size: 16px;
@@ -26,6 +26,13 @@
     margin-bottom: 0.5em;
     font-weight: 600;
     line-height: 1.4;
+    /* Headings keep full-strength ink against the softened body copy. */
+    color: var(--fn-text-primary);
+  }
+
+  strong,
+  b {
+    color: var(--fn-text-primary);
   }
 
   h1 {

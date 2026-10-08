@@ -146,6 +146,13 @@ function sameMemberIds(left?: string[], right?: string[]): boolean {
   return a.length === b.length && a.every((id, index) => id === b[index]);
 }
 
+/** Order-sensitive id-list equality for composer-default fields. */
+function sameIdList(left?: string[] | null, right?: string[] | null): boolean {
+  const a = left ?? [];
+  const b = right ?? [];
+  return a.length === b.length && a.every((id, index) => id === b[index]);
+}
+
 /**
  * Shared projection used by the chat composer (`ChatInput` /
  * ``composerLookups``). Keeps the lightweight ``ChatAgentOption`` shape
@@ -394,7 +401,13 @@ export function AgentProvider({ children }: { children: ReactNode }) {
                 a.bridge_connection_name === b.bridge_connection_name &&
                 a.bridge_disconnected === b.bridge_disconnected &&
                 a.bridge_inbound === b.bridge_inbound &&
-                sameMemberIds(a.member_ids, b.member_ids)
+                sameMemberIds(a.member_ids, b.member_ids) &&
+                // Composer defaults live on this list: skipping them here
+                // means an expert-config connector/KB change is dropped by
+                // the guard and new chats keep auto-attaching the old picks
+                // until a full page reload.
+                sameIdList(a.mcp_servers, b.mcp_servers) &&
+                sameIdList(a.knowledge_base_ids, b.knowledge_base_ids)
               );
             })
           ) {

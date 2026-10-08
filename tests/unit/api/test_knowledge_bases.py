@@ -182,7 +182,7 @@ async def test_create_base_uses_selected_model_when_usable(
         create_base=lambda **kwargs: created.update(kwargs) or _Base(),
     )
     server = SimpleNamespace(services=_services())
-    user = SimpleNamespace(id=1, is_admin=False)
+    user = SimpleNamespace(id=1, is_admin=False, org_id="org-1")
     monkeypatch.setattr(knowledge_bases, "assert_knowledge_usable", lambda *_a, **_k: None)
     monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: service)
 
@@ -202,6 +202,7 @@ async def test_create_base_uses_selected_model_when_usable(
         "shared": False,
         "icon_name": "",
         "max_documents": 100,
+        "org_id": "org-1",
     }
 
 
@@ -344,7 +345,7 @@ def test_row_payload_includes_has_original(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(
         knowledge_files,
         "documents_dir",
-        lambda _kb_id: tmp_path,
+        lambda _kb_id, org_id=None: tmp_path,
     )
     doc = _Document(filename="notes.md")
     missing = knowledge_bases._row_payload(doc)

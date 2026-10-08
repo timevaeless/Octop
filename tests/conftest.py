@@ -99,3 +99,19 @@ def tmp_octop_home(_isolated_user_home: Path) -> Iterator[Path]:
     octop = _isolated_user_home / ".octop"
     octop.mkdir(exist_ok=True)
     yield octop
+
+
+@pytest.fixture(autouse=True)
+def _reset_tenant_scope_after_test() -> Iterator[None]:
+    """Clear any leaked tenant scope after each test.
+
+    Some code paths bind a ``TenantScope`` into the ambient ContextVar and,
+    when a test exercises them outside a full request lifecycle, the binding
+    survives into later tests (making the fail-closed "no scope" assertions
+    in test_ws_tenant_scope flaky under the full suite). ``default`` is
+    ``None``, so resetting to None restores the pristine state.
+    """
+    yield
+    from octop.infra.users.tenancy_context import _scope
+
+    _scope.set(None)

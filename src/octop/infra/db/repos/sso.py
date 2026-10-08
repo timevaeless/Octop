@@ -53,6 +53,9 @@ class SsoProviderRow:
     updated_at: int
     kind: str = "oidc"
     extra: dict[str, Any] = field(default_factory=dict)
+    # Upstream namespace for JIT tenant resolution (``idp_org_bindings``).
+    # Empty string disables claim/static resolution for this provider.
+    idp_alias: str = ""
 
     @classmethod
     def from_row(cls, row: DbRow) -> SsoProviderRow:
@@ -71,6 +74,7 @@ class SsoProviderRow:
             updated_at=int(row["updated_at"]),
             kind=str(row["kind"]) if "kind" in keys and row["kind"] else "oidc",
             extra=_parse_extra(row["extra"] if "extra" in keys else None),
+            idp_alias=str(row["idp_alias"] or "") if "idp_alias" in keys else "",
         )
 
 

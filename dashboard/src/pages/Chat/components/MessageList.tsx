@@ -14,7 +14,6 @@ import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
 import { useTranslation } from "react-i18next";
 import type { HitlDecisionHandler } from "../../../api/types/hitl";
 import type { ChatMessage } from "../hooks/useChat";
-import type { ComposerTagLookups } from "./UserMessageComposerTags";
 import MessageBubble from "./MessageBubble";
 import AssistantTurnView from "./AssistantTurnView";
 import ScrollToBottomButton from "./ScrollToBottomButton";
@@ -86,7 +85,6 @@ const virtuosoComponents: Components<MessageGroup, VirtuosoListContext> = {
 interface MessageListProps {
   messages: ChatMessage[];
   agentId?: string | null;
-  composerLookups?: ComposerTagLookups;
   loading?: boolean;
   historyHasMore?: boolean;
   historyLoadingMore?: boolean;
@@ -118,7 +116,6 @@ interface MessageListProps {
 
 interface GroupRenderContext {
   agentId?: string | null;
-  composerLookups?: ComposerTagLookups;
   isStreaming?: boolean;
   liveSpeakers?: ReadonlyArray<string>;
   lastBrowserGroupIndex: number;
@@ -200,7 +197,6 @@ function renderMessageGroup(
         <MessageBubble
           message={msg}
           agentId={ctx.agentId}
-          composerLookups={ctx.composerLookups}
           onRegenerate={ctx.onRegenerate}
           onEditUserMessage={ctx.onEditUserMessage}
         />
@@ -247,7 +243,6 @@ export default function MessageList(props: MessageListProps) {
   const {
     messages,
     agentId,
-    composerLookups,
     loading,
     historyHasMore,
     historyLoadingMore,
@@ -702,7 +697,6 @@ export default function MessageList(props: MessageListProps) {
   const groupContext = useMemo<GroupRenderContext>(
     () => ({
       agentId,
-      composerLookups,
       isStreaming,
       liveSpeakers,
       lastBrowserGroupIndex,
@@ -725,7 +719,6 @@ export default function MessageList(props: MessageListProps) {
     }),
     [
       agentId,
-      composerLookups,
       isStreaming,
       liveSpeakers,
       lastBrowserGroupIndex,

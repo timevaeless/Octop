@@ -9,7 +9,11 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 
-from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
+from octop.api.common.agent import (
+    assert_agent_access_row,
+    assert_agent_owner,
+    require_agent_row,
+)
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
 from octop.api.common.workspace import require_agent_workspace
@@ -189,6 +193,11 @@ def _row_dict(
         "published_expert_id": row.published_expert_id,
         "welcome_message": welcome_from_row(row),
         "is_shared": bool(int(getattr(row, "is_shared", 0) or 0)),
+        # Tenancy + resource ACL (016/017). The admin resource-ACL tab reads
+        # these off the listing; omitting them makes a stored ACL indistinguishable
+        # from "no ACL" on the dashboard (it would look lost after a refresh).
+        "org_id": getattr(row, "org_id", None),
+        "allowed_roles": list(getattr(row, "allowed_roles", None) or []),
         "is_owner": row.user_id is not None and row.user_id == viewer_user_id,
         "owner_username": owner_username,
         "kind": getattr(row, "kind", None) or "expert",
@@ -251,7 +260,11 @@ async def list_agents(
         return _attach_unread_counts(server, user.id, payloads)
 
     owned = registry.list_agents(user.id)
-    shared = server.services.agent_repo.list_shared(exclude_user_id=user.id)
+    shared = server.services.agent_repo.list_shared(
+        exclude_user_id=user.id,
+        org_id=user.org_id,
+        role_keys=None if user.is_admin else list(user.role_keys),
+    )
     rows = list({row.agent_id: row for row in [*shared, *owned]}.values())
     shared_owner_username_by_id: dict[int, str] = {}
     for row in shared:
@@ -286,6 +299,7 @@ async def create_agent(
 ) -> dict[str, Any]:
     """Create a new agent from a template or custom config for the current user."""
     from octop.infra.agents.manager import AgentCreateSpec  # noqa: PLC0415
+    from octop.infra.users.resource_attribution import creator_org_id
 
     assert server.app_runtime is not None
     if isinstance(body.config, dict):
@@ -325,6 +339,10 @@ async def create_agent(
         welcome_message=body.welcome_message,
         knowledge_base_ids=knowledge_ids,
         mcp_servers=mcp_servers,
+        # 2026-09-27 attribution rule (see creator_org_id): a platform admin
+        # creates *unattributed* (admin-only until assigned on the
+        # resource-acl face); a tenant user stamps their own tenant.
+        org_id=creator_org_id(user),
     )
     row = await server.app_runtime.agent_registry.create(spec)
     return _row_dict(
@@ -363,6 +381,15 @@ async def get_agent(
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     assert_agent_access_row(row, user)
+    # T2 pluggable hook (octop.api.common.agent_tenancy): by-id shared agent
+    # gate. Lazy import; deleting this module together with this line
+    # restores community behaviour verbatim.
+    # 2026-09-27: the *row's* attribution is the authority — deriving the
+    # boundary from the owner's home org would re-assign unattributed
+    # (admin-draft) rows into a tenant behind the admin's back.
+    from octop.api.common.agent_tenancy import assert_shared_agent_within_tenant
+
+    assert_shared_agent_within_tenant(row, user, owner_org=getattr(row, "org_id", None))
     return _row_dict(
         row,
         viewer_user_id=user.id,
@@ -433,6 +460,8 @@ async def patch_agent(
         if refreshed is not None:
             row = refreshed
     if body.is_shared is not None:
+        # 2026-09-27: sharing no longer re-stamps the row's tenant — the
+        # attribution set at creation (or on the resource-acl face) stands.
         row = await server.app_runtime.agent_registry.set_shared(agent_id, body.is_shared)
     return _row_dict(
         row,
@@ -567,11 +596,11 @@ async def agent_status(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Runtime state plus attached IM channels and cron jobs for the agent."""
-    assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
-    if row is None:
-        raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    # 2026-09-27: was _assert_agent_owner (community original) — that blocked
+    # tenant members from polling a *shared* agent's status while chat and
+    # subagents use the access semantics. require_agent_row unifies:
+    # owner / shared-in-tenant / admin bypass (pluggable tenancy gate inside).
+    row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     channels = server.app_runtime.gateway.list_channels(agent_id)
     cron_jobs = server.app_runtime.cron_manager.list_by_agent(agent_id)
     return {

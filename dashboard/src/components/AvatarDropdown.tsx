@@ -125,8 +125,14 @@ export default function AvatarDropdown({
 
   const handleLogout = useCallback(async () => {
     setMenuOpen(false);
-    await authApi.logout();
+    const resp = await authApi.logout();
     clearAuthToken();
+    // SSO single logout: the provider asked us to end the IdP session too.
+    // Full-page redirect (not navigate) so the IdP cookie domain is hit.
+    if (resp?.redirect_url) {
+      window.location.href = resp.redirect_url;
+      return;
+    }
     await applyGuestLocale();
     navigate("/login", { replace: true });
   }, [navigate]);

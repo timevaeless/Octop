@@ -61,7 +61,17 @@ def install(app: Any, server: Any) -> None:
                 )
             return JSONResponse(status_code=exc.status, content=exc.to_envelope())
 
-        response = await call_next(request)
+        # T2-4: bind the PostgreSQL RLS scope for the request. Mirrors the
+        # request-layer predicate (can_access_resource / tenancy.py): the org
+        # boundary always applies; admins get the request-layer cross-tenant
+        # flavor. Pluggable hook (octop.infra.users.tenancy_context) — the
+        # with-block guarantees the sliding-renew tail cannot inherit it.
+        from octop.infra.users.tenancy_context import scoped_request
+
+        with scoped_request(
+            request.state.octop_user.org_id, bypass=request.state.octop_user.is_admin
+        ):
+            response = await call_next(request)
         if raw is not None:
             try:
                 renewed = maybe_sliding_renew_token(server, raw, request.state.octop_user)

@@ -57,6 +57,20 @@ _QCC_LOCKS: WeakKeyDictionary[ConnectorRepo, dict[str, asyncio.Lock]] = WeakKeyD
 _AGENTLY_LOCKS: WeakKeyDictionary[ConnectorRepo, dict[str, asyncio.Lock]] = WeakKeyDictionary()
 
 
+def _shared_custom_parent_visible(parent: ConnectorRow, viewer_id: int, authz: Any) -> bool:
+    """T2 pluggable hook — implementation in octop.infra.users.tenancy.shared_row_visible.
+
+    Tenancy + role gate for *another user's* shared custom-MCP parent row:
+    without it the shared expansion loops would mount another tenant's
+    business-system MCP specs into this tenant's runtime. Lazy import;
+    deleting that function together with this delegation restores community
+    behaviour verbatim.
+    """
+    from octop.infra.users.tenancy import shared_row_visible
+
+    return shared_row_visible(parent, authz)
+
+
 class ConnectorNameTakenError(ValueError):
     """Raised when a connector display name is already owned by the user."""
 
@@ -298,12 +312,16 @@ class ConnectorService:
     def get_custom_servers_for_api(self, user_id: int) -> dict[str, Any]:
         return redact_servers_for_api(self.get_custom_servers(user_id))
 
-    def put_custom_servers(self, user_id: int, servers: dict[str, Any]) -> dict[str, Any]:
+    def put_custom_servers(
+        self, user_id: int, servers: dict[str, Any], org_id: str | None = None
+    ) -> dict[str, Any]:
         existing = self.get_custom_servers(user_id)
         merged = merge_preserved_oauth(servers, existing)
-        return self._save_custom_servers(user_id, merged)
+        return self._save_custom_servers(user_id, merged, org_id=org_id)
 
-    def _save_custom_servers(self, user_id: int, servers: dict[str, Any]) -> dict[str, Any]:
+    def _save_custom_servers(
+        self, user_id: int, servers: dict[str, Any], org_id: str | None = None
+    ) -> dict[str, Any]:
         normalized = validate_servers_map(
             servers,
             reserved_names=self.reserved_builtin_mcp_names(user_id),
@@ -329,9 +347,17 @@ class ConnectorService:
                 kind=CUSTOM_MCP_KIND,
                 display_name=CUSTOM_MCP_DISPLAY_NAME,
                 mcp_server_name=mcp_server_name(CUSTOM_MCP_KIND, instance_id),
+                org_id=org_id,
             )
         else:
             instance_id = row.instance_id
+            # A pre-018 parent row carries org_id NULL (= platform-shared).
+            # The owner re-saving their servers is the moment to adopt the
+            # tenant: otherwise the row stays orgless forever (the backfill
+            # in _ensure_resource_acl_schema covers it only when the owner
+            # has a default org; this catches the general path too).
+            if row.org_id is None and org_id is not None:
+                self._repo.update_metadata(row.instance_id, org_id=org_id)
         self.encrypt_and_store(
             instance_id=instance_id,
             payload=wrap_servers(normalized),
@@ -463,11 +489,19 @@ class ConnectorService:
     ) -> dict[str, Any]:
         return self.patch_custom_server(user_id, server_name, default_open=default_open)
 
-    def list_instances_for_api(self, user_id: int) -> list[dict[str, Any]]:
-        """Built-in rows + expanded custom servers (hide parent custom-mcp row)."""
+    def list_instances_for_api(self, user_id: int, authz: Any = None) -> list[dict[str, Any]]:
+        """Built-in rows + expanded custom servers (hide parent custom-mcp row).
+
+        ``authz`` (an ``AuthzContext``) applies tenancy + role ACL to shared
+        instances; ``None`` keeps the legacy unfiltered behavior.
+        """
         out: list[dict[str, Any]] = []
         custom_row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
-        for inst in self._repo.list_visible(user_id):
+        for inst in self._repo.list_visible(
+            user_id,
+            org_id=authz.org_id if authz is not None else None,
+            role_keys=authz.role_filter if authz is not None else None,
+        ):
             if is_custom_mcp_kind(inst.kind):
                 continue
             config = ConnectorRepo.parse_config_json(inst)
@@ -482,6 +516,11 @@ class ConnectorService:
                     "has_credentials": inst.has_credentials,
                     "default_open": read_default_open(config),
                     "shared": inst.shared,
+                    # Tenancy + resource ACL echo (016/017): the admin resource-ACL
+                    # tab reads these off the listing; without them a stored ACL is
+                    # indistinguishable from "no ACL" after a refresh.
+                    "org_id": inst.org_id,
+                    "allowed_roles": list(inst.allowed_roles or []),
                     "owner_user_id": inst.user_id,
                     "created_at": inst.created_at,
                     "updated_at": inst.updated_at,
@@ -497,6 +536,8 @@ class ConnectorService:
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
                 continue
+            if not _shared_custom_parent_visible(parent, user_id, authz):
+                continue
             out.extend(
                 expand_custom_instances(
                     parent=parent,
@@ -509,9 +550,13 @@ class ConnectorService:
             item.setdefault("shared", False)
         return out
 
-    def list_active_mcp_server_names(self, user_id: int) -> list[str]:
+    def list_active_mcp_server_names(self, user_id: int, authz: Any = None) -> list[str]:
         names: list[str] = []
-        for inst in self._repo.list_visible(user_id):
+        for inst in self._repo.list_visible(
+            user_id,
+            org_id=authz.org_id if authz is not None else None,
+            role_keys=authz.role_filter if authz is not None else None,
+        ):
             if is_custom_mcp_kind(inst.kind):
                 continue
             if inst.status != "active" or not inst.has_credentials:
@@ -526,7 +571,32 @@ class ConnectorService:
             for name, spec in extract_servers(self.decrypt(parent.instance_id)).items():
                 if isinstance(spec, dict) and spec.get("shared") is True and server_enabled(spec):
                     names.append(shared_mcp_server_name(parent.instance_id, name))
-        return sorted(names)
+        # 可插拔 hook（mcp_catalog.tenant_share）：目录派生行以 harness 键挂载。
+        from octop.mcp_catalog.tenant_share import refine_catalog_mount_names
+
+        return refine_catalog_mount_names(self, user_id, authz, names)
+
+    def list_assignable_instances_for_api(
+        self, user_id: int, authz: Any = None
+    ) -> list[dict[str, Any]]:
+        """Instances *user_id* may attach to an agent — the save-time scope.
+
+        Same rows as :meth:`list_instances_for_api` (so the picker keeps the
+        display labels), narrowed to :meth:`list_active_mcp_server_names` — the
+        exact name set :meth:`validate_mcp_servers_for_user` accepts. A picker
+        built on the plain listing can therefore offer a server the save then
+        rejects with ``CONNECTOR_NOT_BOUND``; this one cannot.
+        """
+        allowed = set(self.list_active_mcp_server_names(user_id, authz))
+        items = [
+            item
+            for item in self.list_instances_for_api(user_id, authz)
+            if item.get("mcp_server_name") in allowed
+        ]
+        # 可插拔 hook（mcp_catalog.tenant_share）：目录派生行按 harness 键补入。
+        from octop.mcp_catalog.tenant_share import append_catalog_assignable_items
+
+        return append_catalog_assignable_items(self, user_id, authz, allowed, items)
 
     def list_default_open_mcp_server_names(self, user_id: int) -> list[str]:
         """Active connectors marked default_open (dashboard + all IM channels)."""
@@ -574,17 +644,67 @@ class ConnectorService:
             apply_defaults=apply_defaults,
         )
 
-    def validate_mcp_servers_for_user(self, user_id: int, names: list[str]) -> list[str]:
-        allowed = set(self.list_active_mcp_server_names(user_id))
+    def validate_mcp_servers_for_user(
+        self, user_id: int, names: list[str], authz: Any = None
+    ) -> list[str]:
+        allowed = set(self.list_active_mcp_server_names(user_id, authz))
         unknown = sorted(set(names) - allowed)
         if unknown:
             raise ValueError(f"mcp_servers not available for user: {unknown}")
         return list(names)
 
-    def custom_harness_configs(self, user_id: int) -> dict[str, Any]:
-        configs = enabled_harness_configs(self.get_custom_servers(user_id))
+    def _delegated_identity_token_for(self, user_id: int, authz: Any) -> str | None:
+        """Mint the delegated-identity JWT for harness-spec building.
+
+        Identity = the user whose config namespace is being built (``user_id``
+        + ``authz``). ``authz=None`` (internal/test callers) mints nothing —
+        a hub-connected server then fails closed at the hub's 401 instead of
+        silently calling with a forged/absent identity. Minting is a local
+        HMAC (microseconds); the token only leaves the process when a spec
+        actually opted in via ``delegate_identity: true``.
+        """
+        from octop.infra.connectors.delegation import mint_identity_token
+
+        return mint_identity_token(self._secret_repo, user_id, authz)
+
+    # ---- pluggable-module accessors (octop.mcp_catalog.tenant_share) ----
+    # Review 2026-10-02 P1-5: the tenant-share module used to reach three
+    # private members (``_repo``, ``_settings_repo``,
+    # ``_delegated_identity_token_for``) from outside the class; an upstream
+    # rename would have broken it SILENTLY — its broad ``except Exception``
+    # guards turn an AttributeError into "no attachments / skip". These three
+    # public accessors are the sanctioned surface: deleting them together
+    # with the tenant_share hooks in this file restores upstream verbatim.
+
+    def catalog_attachment_repo(self) -> Any:
+        """The connector repo, for catalog attachment row queries."""
+        return self._repo
+
+    def catalog_setting(self, key: str) -> str:
+        """One platform-level connector setting (``mcp_catalog_higress_base``)."""
+        return self._settings_repo.get(key) or ""
+
+    def delegated_identity_token(self, user_id: int, authz: Any = None) -> str | None:
+        """Public wrapper: mint the viewer-scoped delegation JWT."""
+        return self._delegated_identity_token_for(user_id, authz)
+
+    def custom_harness_configs(self, user_id: int, authz: Any = None) -> dict[str, Any]:
+        """Own custom MCP configs + shared ones the viewer is allowed to see.
+
+        Shared parents from *other* users pass through
+        :func:`_shared_custom_parent_visible` — a cross-tenant or
+        role-restricted server must never reach the viewer's agent runtime,
+        because its spec carries the owner's endpoint (and possibly header
+        credentials) for a business system.
+        """
+        configs = enabled_harness_configs(
+            self.get_custom_servers(user_id),
+            delegate_token=self._delegated_identity_token_for(user_id, authz),
+        )
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
+                continue
+            if not _shared_custom_parent_visible(parent, user_id, authz):
                 continue
             servers = extract_servers(self.decrypt(parent.instance_id))
             for name, spec in servers.items():
@@ -594,14 +714,27 @@ class ConnectorService:
                     or not server_enabled(spec)
                 ):
                     continue
-                built = enabled_harness_configs({name: spec}).get(name)
+                built = enabled_harness_configs(
+                    {name: spec},
+                    delegate_token=self._delegated_identity_token_for(user_id, authz),
+                ).get(name)
                 if built is not None:
                     configs[shared_mcp_server_name(parent.instance_id, name)] = built
+        # Catalog attachments (2026-10-01): per-service parent rows carry the
+        # tenant-shared MCP connectors minted from published catalog
+        # services — expansion lives in the standalone module.
+        from octop.mcp_catalog.tenant_share import catalog_shared_harness_configs
+
+        configs.update(catalog_shared_harness_configs(self, user_id, authz=authz))
         return configs
 
-    async def mcp_configs_for_user(self, user_id: int) -> dict[str, Any]:
+    async def mcp_configs_for_user(self, user_id: int, authz: Any = None) -> dict[str, Any]:
         configs: dict[str, Any] = {}
-        for inst in self._repo.list_visible(user_id):
+        for inst in self._repo.list_visible(
+            user_id,
+            org_id=authz.org_id if authz is not None else None,
+            role_keys=authz.role_filter if authz is not None else None,
+        ):
             if inst.status != "active":
                 continue
             if is_custom_mcp_kind(inst.kind):
@@ -621,6 +754,8 @@ class ConnectorService:
         await self.ensure_fresh_custom_servers(user_id)
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
+                continue
+            if not _shared_custom_parent_visible(parent, user_id, authz):
                 continue
             servers = extract_servers(self.decrypt(parent.instance_id))
             if any(

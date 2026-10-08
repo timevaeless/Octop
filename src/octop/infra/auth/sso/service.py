@@ -18,6 +18,7 @@ import jwt
 from octop.infra.auth.sso.crypto import decrypt_secret, encrypt_secret
 from octop.infra.auth.sso.discovery import DiscoveryCache
 from octop.infra.auth.sso.id_token import verify_id_token
+from octop.infra.auth.sso.logout import pop_raw_id_token, stash_raw_id_token, store_logout_hint
 from octop.infra.auth.sso.pkce import new_pkce_pair
 from octop.infra.auth.sso.providers import build_adapters
 from octop.infra.auth.sso.providers.base import SSO_KINDS, IdentityProvider
@@ -52,6 +53,11 @@ class SsoService:
         self._user_manager = user_manager
         self._discovery = DiscoveryCache()
         self._adapters: dict[str, IdentityProvider] = build_adapters(self)
+
+    @property
+    def discovery(self) -> DiscoveryCache:
+        """Public read access for pluggable modules (e.g. SSO logout)."""
+        return self._discovery
 
     def status(self) -> dict[str, bool | str]:
         provider = self._services.sso_repo.get_provider()
@@ -89,7 +95,12 @@ class SsoService:
     def get_config_for_admin(self, *, public_base: str) -> dict[str, Any]:
         config = self.get_config_for_kind("oidc", public_base=public_base)
         config.pop("kind", None)
-        config.pop("extra", None)
+        extra = config.pop("extra", None) or {}
+        # Surface single-logout settings explicitly (stored in ``extra``).
+        config["slo"] = {
+            "end_session_endpoint": extra.get("end_session_endpoint"),
+            "post_logout_redirect_uri": extra.get("post_logout_redirect_uri"),
+        }
         return config
 
     def get_config_for_kind(self, kind: str, *, public_base: str) -> dict[str, Any]:
@@ -165,6 +176,17 @@ class SsoService:
             extra = {"agent_id": agent_id}
         elif kind == "dingtalk":
             extra = {}
+
+        if kind == "oidc":
+            # Single-logout config (pluggable module: infra/auth/sso/logout.py).
+            # Kept in ``extra`` so swapping the production IdP is pure config.
+            for _key in ("end_session_endpoint", "post_logout_redirect_uri"):
+                if _key in body:
+                    _val = body.get(_key)
+                    if isinstance(_val, str) and _val.strip():
+                        extra[_key] = _val.strip()
+                    else:
+                        extra.pop(_key, None)
 
         dashboard_origin = self._nullable_string(body, "dashboard_origin", current)
         if kind in {"feishu", "dingtalk", "wecom"}:
@@ -333,6 +355,15 @@ class SsoService:
             user_id=user.id,
             expires_at=int(time.time()) + _LOGIN_CODE_TTL_SECONDS,
         )
+        # SSO single-logout (pluggable): remember the provider's id_token so
+        # POST /api/auth/logout can do RP-Initiated Logout. Best-effort —
+        # a storage hiccup must never block the login itself.
+        raw_id_token = pop_raw_id_token(claims)
+        if raw_id_token:
+            try:
+                store_logout_hint(self._services.db, user.id, provider.id, raw_id_token)
+            except Exception:  # noqa: BLE001
+                logger.exception("failed to store SSO logout hint (user=%s)", user.id)
         params = {"code": login_code, "redirect": login_state.redirect_after}
         if login_state.user_id is not None:
             params["bind"] = "1"
@@ -346,7 +377,10 @@ class SsoService:
         if user is None:
             raise ValueError("SSO user is unavailable")
         self._services.audit_repo.write(
-            actor=user.username, action="auth.oidc_login", target=user.username
+            actor=user.username,
+            action="auth.oidc_login",
+            target=user.username,
+            org_id=getattr(user, "org_id", None),
         )
         return user
 
@@ -447,7 +481,7 @@ class SsoService:
             id_token = token.get("id_token") if isinstance(token, dict) else None
             if not isinstance(id_token, str):
                 raise jwt.InvalidTokenError("token response has no ID token")
-            return verify_id_token(
+            claims = verify_id_token(
                 id_token,
                 jwks_uri=jwks_uri,
                 issuer=self._endpoint(discovery, "issuer"),
@@ -455,6 +489,8 @@ class SsoService:
                 nonce=nonce,
                 httpx=client,
             )
+            stash_raw_id_token(claims, id_token)
+            return claims
 
     @staticmethod
     def _string(

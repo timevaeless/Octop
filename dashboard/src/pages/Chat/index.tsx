@@ -679,16 +679,6 @@ function ChatPageInner() {
     chatAgentOptionsPickable,
   ]);
 
-  const composerLookups = useMemo(
-    () => ({
-      skills: chatSkills,
-      connectors: chatConnectors,
-      knowledgeBases: chatKnowledgeBases,
-      agents: chatAgentOptions,
-    }),
-    [chatSkills, chatConnectors, chatKnowledgeBases, chatAgentOptions],
-  );
-
   const { handleSend } = useChatSend({
     resolvedAgentId,
     activeThreadId,
@@ -1413,7 +1403,6 @@ function ChatPageInner() {
                   <MessageList
                     messages={messages}
                     agentId={resolvedAgentId}
-                    composerLookups={composerLookups}
                     loading={awaitingThreadHistory}
                     historyHasMore={historyHasMore}
                     historyLoadingMore={historyLoadingMore}

@@ -1,5 +1,10 @@
 import { request } from "../request";
 
+export interface OidcSloConfig {
+  end_session_endpoint: string | null;
+  post_logout_redirect_uri: string | null;
+}
+
 export interface OidcConfig {
   enabled: boolean;
   display_name: string;
@@ -9,6 +14,8 @@ export interface OidcConfig {
   dashboard_origin: string | null;
   has_client_secret: boolean;
   redirect_uri?: string;
+  /** Single-logout settings (RP-Initiated Logout). */
+  slo?: OidcSloConfig;
 }
 
 export interface OidcConfigPut {
@@ -19,6 +26,9 @@ export interface OidcConfigPut {
   client_secret?: string;
   scopes?: string;
   dashboard_origin?: string | null;
+  /** Single-logout overrides. Empty string clears the stored value. */
+  end_session_endpoint?: string | null;
+  post_logout_redirect_uri?: string | null;
 }
 
 export interface OidcConfigTestResult {

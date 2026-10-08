@@ -31,6 +31,8 @@ import { installDesktopExternalLinks } from "./utils/desktopExternalLinks";
 import { brandTokensFor } from "./styles/themePalettes";
 import "./styles/theme-vars.css";
 import "./styles/layout.css";
+import "./styles/typography.css";
+import "./styles/overlay-enhance.css";
 import "./styles/form-override.css";
 import "./styles/spin-override.css";
 
@@ -66,7 +68,16 @@ function ThemedApp() {
   const themeConfig = {
     algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
+      // Global typography — var() resolves at runtime from theme-vars.css so
+      // the font stack stays defined in one place.
+      fontFamily:
+        "var(--fn-font-family-base, -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Segoe UI', 'Microsoft YaHei', sans-serif)",
+      fontSize: 14,
+      lineHeight: 1.6,
+      fontWeightStrong: 600,
       borderRadius: 10,
+      borderRadiusSM: 8,
+      borderRadiusLG: 14,
       ...(isMobile
         ? {
             fontSize: 15,
@@ -102,21 +113,39 @@ function ThemedApp() {
               "0px 12px 24px -16px rgba(0, 0, 0, 0.2), 0px 8px 40px 0px rgba(0, 0, 0, 0.3)",
           }
         : {
+            colorBgMask: "rgba(17, 24, 39, 0.45)",
             ...brandTokens,
           }),
     },
-    components: isDark
-      ? {
-          Modal: { headerBg: "#1a1c28", contentBg: "#1a1c28" },
-          Input: { colorBgBase: "#0f1117" },
-          InputNumber: { colorBgBase: "#0f1117" },
-          Select: { colorBgBase: "#0f1117", selectorBg: "#0f1117" },
-          DatePicker: { colorBgBase: "#0f1117" },
-          Segmented: { itemSelectedBg: "#1a1c28" },
-          Card: { colorBgContainer: "#161822" },
-          Tooltip: { colorBgSpotlight: "#424242" },
-        }
-      : {},
+    components: {
+      Modal: {
+        titleFontSize: 16,
+        borderRadiusLG: 16,
+        ...(isDark ? { headerBg: "#1a1c28", contentBg: "#1a1c28" } : {}),
+      },
+      Drawer: {
+        borderRadiusLG: 14,
+        ...(isDark ? { colorBgElevated: "#1a1c28" } : {}),
+      },
+      Button: { fontWeight: 500 },
+      Input: {
+        borderRadius: 10,
+        activeShadow: "0 0 0 3px var(--fn-color-brand-glow, transparent)",
+      },
+      Select: {
+        ...(isDark ? { colorBgBase: "#0f1117", selectorBg: "#0f1117" } : {}),
+      },
+      DatePicker: isDark ? { colorBgBase: "#0f1117" } : {},
+      InputNumber: isDark ? { colorBgBase: "#0f1117" } : {},
+      Card: {
+        borderRadiusLG: 14,
+        ...(isDark ? { colorBgContainer: "#161822" } : {}),
+      },
+      Popover: { borderRadiusLG: 12 },
+      Dropdown: { borderRadiusLG: 12 },
+      Tooltip: isDark ? { colorBgSpotlight: "#424242" } : { borderRadiusSM: 8 },
+      Segmented: isDark ? { itemSelectedBg: "#1a1c28" } : {},
+    },
   };
 
   return (

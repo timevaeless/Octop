@@ -28,6 +28,7 @@ import { preferencesApi } from "../api/modules/preferences";
 import {
   COLLAPSED_WIDTH,
   EXPANDED_WIDTH,
+  SIDEBAR_RAIL_ID,
   buildNavSections,
   navSectionLabel,
   type NavItem,
@@ -118,6 +119,10 @@ interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   isMobile?: boolean;
+  /** Desktop expanded width; user-adjustable via the nav rail's drag handle. */
+  expandedWidth?: number;
+  /** True while that handle is being dragged — suppresses the width transition. */
+  resizing?: boolean;
 }
 
 function NavItemButton({
@@ -381,6 +386,8 @@ export default function Sidebar({
   collapsed,
   onToggle,
   isMobile,
+  expandedWidth = EXPANDED_WIDTH,
+  resizing = false,
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -769,13 +776,17 @@ export default function Sidebar({
   // Right border is drawn by MainLayout's RailEdgeControl.
   return (
     <div
+      id={SIDEBAR_RAIL_ID}
       style={{
-        width: isRailCollapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH,
-        minWidth: isRailCollapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH,
+        width: isRailCollapsed ? COLLAPSED_WIDTH : expandedWidth,
+        minWidth: isRailCollapsed ? COLLAPSED_WIDTH : expandedWidth,
         background: "var(--fn-sidebar-bg)",
         borderRight: "none",
-        transition:
-          "width 0.25s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+        // Suppressed mid-drag: the handle writes width directly every frame, so
+        // an active transition would just lag behind the pointer.
+        transition: resizing
+          ? "none"
+          : "width 0.25s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
         overflow: "hidden",
         display: "flex",
         flexDirection: "column",

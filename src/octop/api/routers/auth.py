@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from octop.api.common.client_ip import resolve_client_ip
-from octop.api.deps import current_user, get_server, sign_token
+from octop.api.deps import current_user, get_server, issue_access_token, sign_token
 from octop.infra.auth.captcha import current_env, ensure_captcha, load_effective, public_config
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.email import normalize_email
@@ -31,6 +31,10 @@ def _user_json(user: Any, *, locale: str | None = None) -> dict[str, Any]:
         "display_name": user.display_name,
         "locale": loc,
         "permissions": effective_permissions(user),
+        # Tenant context consumed by the dashboard (menu filtering, labels).
+        # ``role_keys`` mirrors the token's ``rls`` claim.
+        "org_id": getattr(user, "org_id", None),
+        "role_keys": list(getattr(user, "role_keys", []) or []),
     }
 
 
@@ -196,9 +200,8 @@ async def login(
             user = await _authenticate_ldap(server, body.username, body.password, client_ip)
     if user is None:
         raise OctopError(ErrorCode.AUTH_FAILED, "invalid credentials")
-    secret = server.services.secret_repo.get("jwt")
     ttl = server.services.config.access_token_ttl_seconds
-    token = sign_token(secret, sub=user.id, uname=user.username, role=user.role, ttl_seconds=ttl)
+    token = issue_access_token(server, user, ttl_seconds=ttl)
     return {
         "access_token": token,
         "token_type": "Bearer",
@@ -207,10 +210,35 @@ async def login(
     }
 
 
-@router.post("/logout", status_code=204, summary="Sign out")
+@router.post("/logout", summary="Sign out")
 async def logout(user: Any = Depends(current_user), server: Any = Depends(get_server)) -> Response:
-    """Record an audit event for the current session. JWTs are stateless and not revoked server-side."""
-    server.services.audit_repo.write(actor=user.username, action="auth.logout")
+    """Record the logout audit event; when the user signed in via SSO and the
+    provider supports RP-Initiated Logout, also return the IdP logout URL.
+
+    Response: 204 (local sign-out) or 200 ``{"redirect_url": ...}`` — the
+    caller should navigate to ``redirect_url`` to end the IdP session too.
+    """
+    import asyncio
+    from functools import partial
+
+    server.services.audit_repo.write(
+        actor=user.username, action="auth.logout", org_id=user.org_id
+    )
+    from octop.infra.auth.sso.logout import consume_logout_hint, logout_response
+
+    hint = consume_logout_hint(server.services.db, user.id)
+    if hint is not None:
+        provider_id, id_token = hint
+        provider = server.services.sso_repo.get_by_id(provider_id)
+        if provider is not None and provider.enabled:
+            url = await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(logout_response, server, provider, id_token),
+            )
+            if url is not None:
+                from fastapi.responses import JSONResponse
+
+                return JSONResponse({"redirect_url": url})
     return Response(status_code=204)
 
 

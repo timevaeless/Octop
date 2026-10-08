@@ -1,3 +1,4 @@
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import styles from "./RailEdgeControl.module.less";
 
@@ -18,6 +19,13 @@ interface RailEdgeControlProps {
    * (used when this edge shares a line with a neighboring rail).
    */
   showLine?: boolean;
+  /**
+   * When provided, the edge doubles as a drag handle for resizing the panel.
+   * The caller owns the drag session and the resulting size — this component
+   * only reports where the drag began. Omit to keep the edge as a plain
+   * collapse/expand control (chat history rail).
+   */
+  onResizeStart?: (event: ReactPointerEvent<HTMLElement>) => void;
 }
 
 /** Tall, wide-angle chevron (no circular chrome). */
@@ -56,6 +64,7 @@ export default function RailEdgeControl({
   label,
   className,
   showLine = true,
+  onResizeStart,
 }: RailEdgeControlProps) {
   const { t } = useTranslation();
   const ariaLabel =
@@ -73,6 +82,15 @@ export default function RailEdgeControl({
       }`}
     >
       {showLine ? <div className={styles.line} aria-hidden /> : null}
+      {onResizeStart ? (
+        <div
+          className={styles.resizeHandle}
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={t("layout.resizePanel", "拖动调整宽度")}
+          onPointerDown={onResizeStart}
+        />
+      ) : null}
       <button
         type="button"
         className={styles.btn}

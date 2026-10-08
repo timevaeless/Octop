@@ -190,6 +190,20 @@ async def run_auto_backup(server: OctopServer) -> BackupFileInfo | None:
         logger.info("auto backup skipped: another backup is already running")
         return None
 
+    # System-level maintenance: a backup must cover every tenant's rows, but it
+    # runs outside any request, so the RLS scope would otherwise hide org rows
+    # from the dump. Bind the explicit bypass (T2-4; see migration 025) — the
+    # asyncio.to_thread dump inherits this context.
+    from octop.infra.users.tenancy_context import bind_tenant_scope, reset_tenant_scope
+
+    _scope_token = bind_tenant_scope(None, bypass=True)
+    try:
+        return await _run_auto_backup_locked(server)
+    finally:
+        reset_tenant_scope(_scope_token)
+
+
+async def _run_auto_backup_locked(server: OctopServer) -> BackupFileInfo | None:
     async with hold_backup_lock("auto"):
         config = load_config(server.paths.config)
         if server.services is None:

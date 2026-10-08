@@ -130,18 +130,35 @@ async def prepare_probe_credentials(
 def _probe_mcp_http_error(exc: httpx.HTTPStatusError, *, kind: str) -> dict[str, Any]:
     """Map an HTTP status error from a remote MCP probe to a clear result.
 
-    ``401``/``403`` are definitive auth rejections (bad key), everything else
-    (5xx, 429, network proxy errors) is treated as a connection/upstream
+    ``401`` is an authentication rejection (bad/absent key); ``403`` means the
+    request authenticated but the identity is not authorized — for custom MCP
+    endpoints that is typically the hub ACL denying a user whose roles match
+    no tool (e.g. tools imported with empty ``allowed_roles``). Everything
+    else (5xx, 429, network proxy errors) is treated as a connection/upstream
     problem so callers can distinguish "key is wrong" from "can't reach host".
     """
     status = exc.response.status_code
-    if status in (401, 403):
+    if status == 401:
         if kind == "youdao-note":
             return _probe_youdao_note_http_error(exc)
         err = http_error_message(exc.response)
         return {
             "ok": False,
             "error_type": "auth",
+            "error": err or str(exc),
+            "status_code": status,
+        }
+    if status == 403:
+        err = http_error_message(exc.response)
+        if kind == "custom-mcp" and (not err or err == f"HTTP {status}"):
+            err = (
+                "已通过网关认证，但当前用户未被授权任何工具："
+                "请在 MCP 目录为该服务的工具分配角色（访问控制），"
+                "或改用具备相应角色的账号探测"
+            )
+        return {
+            "ok": False,
+            "error_type": "forbidden",
             "error": err or str(exc),
             "status_code": status,
         }
@@ -531,8 +548,16 @@ def format_probe_exception(exc: BaseException) -> str:
     return msg or type(exc).__name__
 
 
-async def probe_custom_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
-    """Probe one user-defined MCP server (streamable_http or stdio)."""
+async def probe_custom_mcp_server(
+    spec: dict[str, Any], delegate_token: str | None = None
+) -> dict[str, Any]:
+    """Probe one user-defined MCP server (streamable_http or stdio).
+
+    ``delegate_token``: delegated-identity JWT for specs that opted in with
+    ``delegate_identity: true``. Such specs carry no static credentials —
+    the Authorization header only exists at harness-build time — so probing
+    without a minted token would hit the gateway unauthenticated (401).
+    """
     from octop.infra.connectors.custom_mcp import harness_spec_for_server, normalize_server_spec
 
     try:
@@ -547,7 +572,7 @@ async def probe_custom_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         return {"ok": False, "error": str(exc), "error_type": "validation"}
 
-    connection = harness_spec_for_server(normalized)
+    connection = harness_spec_for_server(normalized, delegate_token=delegate_token)
     transport = str(connection.get("transport") or "")
 
     if transport == "streamable_http":

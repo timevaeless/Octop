@@ -45,7 +45,16 @@ export default function ConnectorPickerPopover({
       items={connectors}
       filterFn={filterFn}
       searchPlaceholder={t("connectors.chatPickerSearch")}
-      emptyMessage={t("connectors.chatEmptyHint")}
+      // Scoped picker: an empty list usually means the expert itself has no
+      // connectors configured (not "no connectors exist").
+      emptyMessage={
+        connectors.length === 0
+          ? t(
+              "connectors.chatEmptyExpertHint",
+              "该专家未配置连接器——请在专家设置的「默认连接器」里勾选",
+            )
+          : t("connectors.chatEmptyHint")
+      }
       width="narrow"
       footerIcon={<Settings2 size={15} aria-hidden />}
       footerLabel={t("connectors.manageConnectors")}

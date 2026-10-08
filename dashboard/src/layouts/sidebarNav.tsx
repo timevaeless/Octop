@@ -15,16 +15,43 @@ import {
   Sparkles,
   Puzzle,
   Package,
+  Blocks,
   HardDrive,
   GraduationCap,
   Shield,
+  ShieldCheck,
   PanelsTopLeft,
 } from "lucide-react";
 import type { OctopUser } from "../api/modules/auth";
-import { navAllowed, userCan } from "../utils/permissions";
+import { canAccessRolesPage, navAllowed, userCan } from "../utils/permissions";
 
-export const EXPANDED_WIDTH = 220;
+export const EXPANDED_WIDTH = 240;
 export const COLLAPSED_WIDTH = 56;
+/** DOM id of the desktop nav rail root — the node drag-resize writes width to. */
+export const SIDEBAR_RAIL_ID = "octop-nav-rail";
+
+/** Drag bounds for the desktop nav rail (expanded width, px). */
+export const NAV_MIN_WIDTH = 180;
+export const NAV_MAX_WIDTH = 400;
+
+/**
+ * Clamp a rail width to {@link NAV_MIN_WIDTH}..{@link NAV_MAX_WIDTH}, further
+ * capped at half the viewport: 768px is the mobile breakpoint, so a full-width
+ * rail on a small desktop window would leave very little room for content.
+ *
+ * Below ~360px the viewport cap undercuts the floor; there the floor yields so
+ * the result stays total. That band is unreachable for the desktop rail (the
+ * drag handle only renders at >=768px), but the function should not depend on
+ * its caller for that.
+ *
+ * ``viewportWidth`` is passed in rather than read from ``window`` so the policy
+ * stays pure and testable.
+ */
+export function clampNavWidth(value: number, viewportWidth: number): number {
+  const upper = Math.min(NAV_MAX_WIDTH, Math.round(viewportWidth * 0.5));
+  const lower = Math.min(NAV_MIN_WIDTH, upper);
+  return Math.min(upper, Math.max(lower, Math.round(value)));
+}
 
 const iconSize = 16;
 const iconStroke = 1.8;
@@ -63,9 +90,11 @@ export const SIDEBAR_NAV_KEYS = [
   "remote-desktop",
   "acp",
   "admin-users",
+  "admin-roles",
   "models",
   "admin-storage",
   "admin-plugins",
+  "admin-mcp-catalog",
   "admin-security",
   "admin-advanced",
 ] as const;
@@ -117,9 +146,11 @@ export const SIDEBAR_GROUPED_NAV_KEYS = [
   "remote-desktop",
   "acp",
   "admin-users",
+  "admin-roles",
   "models",
   "admin-storage",
   "admin-plugins",
+  "admin-mcp-catalog",
   "admin-security",
   "admin-advanced",
   "agent-config",
@@ -269,6 +300,14 @@ export function buildNavSections(
       labelKey: "nav.adminUsers",
     });
   }
+  if (navAllowed(user, "admin-roles")) {
+    adminItems.push({
+      key: "admin-roles",
+      path: "/admin/roles",
+      icon: <ShieldCheck size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.adminRoles",
+    });
+  }
   if (navAllowed(user, "models")) {
     adminItems.push({
       key: "models",
@@ -291,6 +330,18 @@ export function buildNavSections(
       path: "/admin/plugins",
       icon: <Puzzle size={iconSize} strokeWidth={iconStroke} />,
       labelKey: "nav.adminPlugins",
+    });
+  }
+  // MCP catalog (044): one menu entry for both audiences — platform admins
+  // manage services at /admin/mcp-catalog; the org_admin package holder is
+  // routed to the tenant view (/admin/tenant-mcp) for connector attach and
+  // per-service/tool roles. The tenant entry lives in this same menu.
+  if (navAllowed(user, "admin-mcp-catalog") || canAccessRolesPage(user)) {
+    adminItems.push({
+      key: "admin-mcp-catalog",
+      path: user?.role === "admin" ? "/admin/mcp-catalog" : "/admin/tenant-mcp",
+      icon: <Blocks size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.mcpCatalog",
     });
   }
   if (navAllowed(user, "admin-security")) {

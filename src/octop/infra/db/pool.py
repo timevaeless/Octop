@@ -165,12 +165,32 @@ class PostgresPool:
     @contextmanager
     def connect(self) -> Iterator[_PgConnectionProxy]:
         with self._pool.connection() as conn:
+            # T2-4 pluggable hook (octop.infra.users.tenancy_context): bind
+            # the RLS scope on checkout. Lazy import; deleting the module
+            # removes RLS wholesale.
+            from octop.infra.users.tenancy_context import (
+                bind_pooled_connection,
+                current_scope,
+            )
+
+            if current_scope() is not None:
+                bind_pooled_connection(_PgConnectionProxy(conn))
             yield _PgConnectionProxy(conn)
 
     @contextmanager
     def transaction(self) -> Iterator[_PgConnectionProxy]:
-        with self._pool.connection() as conn, conn.transaction():
-            yield _PgConnectionProxy(conn)
+        with self._pool.connection() as conn:
+            # T2-4 pluggable hook (octop.infra.users.tenancy_context): same
+            # scope binding as connect(), above.
+            from octop.infra.users.tenancy_context import (
+                bind_pooled_connection,
+                current_scope,
+            )
+
+            if current_scope() is not None:
+                bind_pooled_connection(_PgConnectionProxy(conn))
+            with conn.transaction():
+                yield _PgConnectionProxy(conn)
 
     def close(self) -> None:
         self._pool.close()

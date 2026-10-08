@@ -47,6 +47,8 @@ interface SsoFormValues {
   client_secret?: string;
   scopes: string[];
   dashboard_origin?: string;
+  end_session_endpoint?: string;
+  post_logout_redirect_uri?: string;
 }
 
 type TestResult = { ok: boolean; detail: string } | null;
@@ -115,6 +117,8 @@ function configToFormValues(config: OidcConfig): SsoFormValues {
       .map((s) => s.trim())
       .filter(Boolean),
     dashboard_origin: config.dashboard_origin ?? "",
+    end_session_endpoint: config.slo?.end_session_endpoint ?? "",
+    post_logout_redirect_uri: config.slo?.post_logout_redirect_uri ?? "",
   };
 }
 
@@ -207,6 +211,9 @@ export default function SsoPanel() {
         client_secret: values.client_secret?.trim() || undefined,
         scopes: values.scopes.join(" "),
         dashboard_origin: values.dashboard_origin?.trim() || null,
+        // Always send both: empty string clears the stored value server-side.
+        end_session_endpoint: values.end_session_endpoint?.trim() || "",
+        post_logout_redirect_uri: values.post_logout_redirect_uri?.trim() || "",
       };
       const saved = await ssoApi.putOidcConfig(body);
       applyConfig(saved);
@@ -627,19 +634,47 @@ export default function SsoPanel() {
                       key: "advanced",
                       label: t("adminSso.sectionAdvanced"),
                       children: (
-                        <Form.Item
-                          name="dashboard_origin"
-                          label={t("adminSso.dashboardOrigin")}
-                          extra={t("adminSso.dashboardOriginHint")}
-                          rules={[
-                            {
-                              type: "url",
-                              message: t("adminSso.dashboardOriginInvalid"),
-                            },
-                          ]}
-                        >
-                          <Input placeholder="https://octop.example.com" />
-                        </Form.Item>
+                        <>
+                          <Form.Item
+                            name="dashboard_origin"
+                            label={t("adminSso.dashboardOrigin")}
+                            extra={t("adminSso.dashboardOriginHint")}
+                            rules={[
+                              {
+                                type: "url",
+                                message: t("adminSso.dashboardOriginInvalid"),
+                              },
+                            ]}
+                          >
+                            <Input placeholder="https://octop.example.com" />
+                          </Form.Item>
+                          <Form.Item
+                            name="end_session_endpoint"
+                            label={t("adminSso.endSessionEndpoint")}
+                            extra={t("adminSso.endSessionEndpointHint")}
+                            rules={[
+                              {
+                                type: "url",
+                                message: t("adminSso.dashboardOriginInvalid"),
+                              },
+                            ]}
+                          >
+                            <Input placeholder="https://idp.example.com/connect/logout" />
+                          </Form.Item>
+                          <Form.Item
+                            name="post_logout_redirect_uri"
+                            label={t("adminSso.postLogoutRedirectUri")}
+                            extra={t("adminSso.postLogoutRedirectUriHint")}
+                            rules={[
+                              {
+                                type: "url",
+                                message: t("adminSso.dashboardOriginInvalid"),
+                              },
+                            ]}
+                          >
+                            <Input placeholder="https://octop.example.com/login" />
+                          </Form.Item>
+                        </>
                       ),
                     },
                   ]}

@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel, Field
 
-from octop.api.deps import get_server, require_database, resolve_user_from_token, sign_token
+from octop.api.deps import get_server, issue_access_token, require_database, resolve_user_from_token
 from octop.infra.agents.providers.presets import load_provider_presets
 from octop.infra.agents.providers.probe import make_probe_provider_row, probe_provider_row
 from octop.infra.errors import ErrorCode, OctopError
@@ -366,11 +366,8 @@ async def initial_admin(
         locale=locale,
         role_name=admin_role.user_role_name if admin_role is not None else "管理员",
     )
-    secret = server.services.secret_repo.get("jwt")
     ttl = server.services.config.access_token_ttl_seconds
-    access_token = sign_token(
-        secret, sub=user.id, uname=user.username, role=user.role, ttl_seconds=ttl
-    )
+    access_token = issue_access_token(server, user, ttl_seconds=ttl)
     return {
         "id": user.id,
         "username": user.username,

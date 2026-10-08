@@ -27,6 +27,7 @@ from octop.infra.agents.experts.avatar import (
     public_portrait_icon_url,
     read_snapshot_avatar,
 )
+from octop.infra.agents.visibility import visible_knowledge_bases, visible_mcp_servers
 from octop.infra.agents.experts.catalog import (
     MANIFEST_FILENAME,
     apply_workspace_quick_prompts,
@@ -161,6 +162,9 @@ class PublishExpertBody(BaseModel):
     slug: str | None = None
     welcome_message: LocalizedTextResponse | None = None
     quick_prompts: list[QuickPromptResponse] | None = None
+    # Resource ACL: ability-package keys allowed to see/install this template.
+    # ``None``/``[]`` = no role restriction (tenancy alone decides).
+    allowed_roles: list[str] | None = None
 
 
 class RefreshPublishedExpertBody(BaseModel):
@@ -425,7 +429,13 @@ def _map_skillhub_error(exc: SkillHubMarketError) -> OctopError:
 
 
 def _published_snapshot_dir(server: Any, expert_id: str) -> Any:
-    return server.services.paths.published_experts_dir / expert_id
+    """T2 pluggable hook — implementation in octop.api.common.expert_tenancy.
+
+    Tenant-scoped snapshot dir (T2-3): orgs/<org>/ or shared/ for platform rows.
+    """
+    from octop.api.common.expert_tenancy import published_snapshot_dir as _impl
+
+    return _impl(server, expert_id)
 
 
 def _published_creator_username(server: Any, created_by: str) -> str | None:
@@ -472,6 +482,14 @@ def _published_summary_dict(row: Any, server: Any) -> dict[str, Any]:
         "color": row.color or None,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
+        # Resource ACL visibility (admin surfaces edit these).
+        "org_id": getattr(row, "org_id", None),
+        "allowed_roles": list(getattr(row, "allowed_roles", []) or []),
+        # Publisher's composer defaults (2026-09-29): installs fall back to
+        # these; the installer may override any of them.
+        "default_knowledge_base_ids": list(getattr(row, "default_knowledge_base_ids", []) or []),
+        "default_mcp_servers": list(getattr(row, "default_mcp_servers", []) or []),
+        "default_skill_package_ids": list(getattr(row, "default_skill_package_ids", []) or []),
     }
 
 
@@ -480,16 +498,32 @@ def _require_published_expert(server: Any, expert_id: str) -> Any:
     return require_published_expert(server.services, expert_id)
 
 
+def _require_accessible_published_expert(server: Any, expert_id: str, user: Any) -> Any:
+    """T2 pluggable hook — implementation in octop.api.common.expert_tenancy.
+
+    Fetch a published template AND enforce tenancy + role ACL (L2): knowing
+    an id must not reveal a resource the caller's tenant or ability packages
+    cannot see.
+    """
+    from octop.api.common.expert_tenancy import (
+        require_accessible_published_expert as _impl,
+    )
+
+    return _impl(server, expert_id, user)
+
+
 @router.get("/experts/published", summary="List published expert templates")
 async def list_published_experts(
-    _: Any = Depends(current_user),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    """List expert snapshots published by users and available for private installation."""
-    return [
-        _published_summary_dict(row, server)
-        for row in server.services.published_expert_repo.list_all()
-    ]
+    """List expert snapshots visible from the caller's tenant and roles."""
+    # T2 pluggable hook (octop.api.common.expert_tenancy): tenancy + ACL
+    # filtering for the catalog. Lazy import; deleting the module together
+    # with this line restores the community list_all behaviour verbatim.
+    from octop.api.common.expert_tenancy import visible_published_rows
+
+    return [_published_summary_dict(row, server) for row in visible_published_rows(server, user)]
 
 
 @router.get(
@@ -498,11 +532,11 @@ async def list_published_experts(
 )
 async def get_published_expert_avatar(
     expert_id: str,
-    _: Any = Depends(current_user),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> Response:
     """Return the avatar bytes baked into the published snapshot, if any."""
-    row = _require_published_expert(server, expert_id)
+    row = _require_accessible_published_expert(server, expert_id, user)
     found = read_snapshot_avatar(_published_snapshot_dir(server, row.id))
     if found is None:
         raise OctopError(ErrorCode.NOT_FOUND, "avatar not uploaded")
@@ -513,11 +547,11 @@ async def get_published_expert_avatar(
 @router.get("/experts/published/{expert_id}", summary="Get published expert template detail")
 async def get_published_expert(
     expert_id: str,
-    _: Any = Depends(current_user),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return published-expert metadata and a previewable snapshot file inventory."""
-    row = _require_published_expert(server, expert_id)
+    row = _require_accessible_published_expert(server, expert_id, user)
     snapshot_dir = _published_snapshot_dir(server, row.id)
     preview_paths = await asyncio.to_thread(preview_paths_from_expert_dir, snapshot_dir)
     files = await asyncio.to_thread(discover_seed_paths, snapshot_dir)
@@ -558,6 +592,12 @@ async def publish_agent_expert(
     if workspace is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     welcome_zh, welcome_en = _publish_welcome_fields(body.welcome_message)
+    # T2 pluggable hook (octop.api.common.expert_tenancy): publish-time org
+    # stamping — a tenant user publishes into their own org; a platform admin
+    # without an org context publishes platform-wide.
+    from octop.api.common.expert_tenancy import publish_org_for
+
+    publish_org = publish_org_for(user)
     row = await publish_owned_agent_expert(
         services=server.services,
         registry=server.app_runtime.agent_registry,
@@ -570,6 +610,8 @@ async def publish_agent_expert(
         welcome_message_zh=welcome_zh,
         welcome_message_en=welcome_en,
         quick_prompts=tuple(_quick_prompt_body_dict(p) for p in (body.quick_prompts or [])),
+        org_id=publish_org,
+        allowed_roles=body.allowed_roles,
     )
     return _published_summary_dict(row, server)
 
@@ -648,16 +690,54 @@ async def install_published_expert(
     """Create a private agent and seed it from the immutable published snapshot."""
     assert server.app_runtime is not None
     assert server.services is not None
+    row = _require_accessible_published_expert(server, expert_id, user)
     assert_user_backend_root_dirs(
         user,
         body.backend,
         policy_repo=server.services.user_policy_repo,
     )
+    # Template defaults (2026-09-29): when the installer does not pass their
+    # own lists, fall back to the publisher's stamped defaults. Defaults are
+    # SOFT-FILTERED to what the installer can actually see (a template is a
+    # suggestion, not a promise — one invisible connector must not block the
+    # install), while installer-provided lists keep the fail-fast validation
+    # in _validated_session_defaults / validate_skill_package_ids.
+    def _soft_filter(values: list[str], visible: set[str]) -> list[str]:
+        return [value for value in values if value in visible]
+
+    if body.knowledge_base_ids is not None:
+        kb_body: list[str] | None = body.knowledge_base_ids
+    else:
+        kb_body = _soft_filter(
+            list(row.default_knowledge_base_ids),
+            {b.id for b in visible_knowledge_bases(server.app_runtime.agent_registry, user.id)},
+        )
+    if body.mcp_servers is not None:
+        mcp_body: list[str] | None = body.mcp_servers
+    else:
+        mcp_body = _soft_filter(
+            list(row.default_mcp_servers),
+            {
+                str(s.get("mcp_server_name"))
+                for s in visible_mcp_servers(server.app_runtime.agent_registry, user.id)
+                if s.get("mcp_server_name")
+            },
+        )
+    if body.skill_package_ids is not None:
+        pkg_body: list[str] | None = body.skill_package_ids
+    else:
+        pkg_body = _soft_filter(
+            list(row.default_skill_package_ids),
+            {
+                str(p.id)
+                for p in server.services.skill_package_repo.list_all()
+            },
+        )
     kb_ids, servers = _validated_session_defaults(
         server.app_runtime.agent_registry,
         user.id,
-        knowledge_base_ids=body.knowledge_base_ids,
-        mcp_servers=body.mcp_servers,
+        knowledge_base_ids=kb_body,
+        mcp_servers=mcp_body,
     )
     patch, copies, report = _composer_apply(body, user=user, server=server)
     result = await install_published_expert_agent(
@@ -671,7 +751,7 @@ async def install_published_expert(
             providers=body.providers,
             default_model=body.default_model,
             backend=body.backend,
-            skill_package_ids=body.skill_package_ids,
+            skill_package_ids=pkg_body,
             knowledge_base_ids=kb_ids,
             mcp_servers=servers,
             color=body.color,
@@ -883,6 +963,8 @@ async def create_agent_from_expert(
         user_repo=server.services.user_repo,
         user_id=user.id,
     )
+    from octop.infra.users.resource_attribution import creator_org_id
+
     spec = build_create_spec_from_expert(
         expert_id=expert_id,
         expert=expert,
@@ -899,6 +981,10 @@ async def create_agent_from_expert(
         skill_package_ids=package_ids,
         knowledge_base_ids=kb_ids,
         mcp_servers=servers,
+        # 2026-09-27 attribution rule (see creator_org_id): a platform admin
+        # creates *unattributed*; a tenant user stamps their own tenant.
+        # Missing this made RLS reject the INSERT for tenant callers (500).
+        org_id=creator_org_id(user),
     )
     patch, copies, report = _composer_apply(body, user=user, server=server)
     row = await server.app_runtime.agent_registry.create(

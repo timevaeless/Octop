@@ -121,6 +121,21 @@ async def build_content_from_message(
         locale=locale,
         skip_vision_images=True,
     )
+    # Vision images still need a path hint: the model may see the pixels via
+    # the ``workspace://`` ref, but only text tells it *where* the file lives
+    # (filename is required by archive-style tools). UI strips ``[附件]``/``[Attachment]``
+    # sections from history, so this never surfaces as user-authored text.
+    for part in vision_parts:
+        if not part.local_path:
+            continue
+        file_hints.extend(
+            hints_from_content_parts(
+                [part],
+                workspace=workspace,
+                locale=locale,
+                skip_vision_images=False,
+            )
+        )
     # Vision parts that cannot be re-encoded may still degrade to hints inside
     # materialize; excess images always become path hints.
     if excess_images:

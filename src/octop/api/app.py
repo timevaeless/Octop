@@ -136,6 +136,19 @@ def build_app(server: OctopServer) -> FastAPI:
     install_bridge_proxy(app, server)
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
+    # Behavior patches (octop/ext, upstream-merge safe): before/after hooks
+    # declared against upstream callables, installed once at boot. A target
+    # renamed upstream fails LOUDLY here by design — fix or drop the patch.
+    from octop.ext.patches import install_all as install_behavior_patches
+
+    install_behavior_patches()
+    # T2-4 pluggable hook (octop.api.middleware.ws_tenant_scope): the http
+    # middleware above never sees websocket scopes — bind the tenant scope
+    # for WS connections too, or every RLS query in a WS handler sees zero
+    # rows (fail-closed) and dashboard chat breaks.
+    from octop.api.middleware.ws_tenant_scope import install as install_ws_tenant_scope
+
+    install_ws_tenant_scope(app)
 
     if server.app_runtime is not None and server.app_runtime.bridge_manager is not None:
         from octop.api.bridge_peer import prepare_peer_dashboard_turn
@@ -188,6 +201,10 @@ def build_app(server: OctopServer) -> FastAPI:
         mobile,
         ollama_models,
         onnx_models,
+        org_admin,
+        org_mcp,
+        org_members,
+        pending_users,
         plugins,
         preferences,
         proactive_care,
@@ -212,11 +229,15 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.routers.filesystem import router as filesystem_router
     from octop.api.routers.observability import router as observability_router
     from octop.api.routers.providers import admin_router as admin_providers_router
+    from octop.api.routers.roles import router as admin_roles_router
     from octop.api.routers.security import router as security_router
     from octop.api.routers.storage_backends import admin_router as admin_storage_router
     from octop.api.routers.storage_backends import user_router as storage_backends_user_router
     from octop.api.routers.tls import router as tls_router
     from octop.api.routers.voice import admin_router as admin_voice_router
+    from octop.mcp_catalog.router import (
+        router as mcp_catalog_router,  # isolated module (upstream-merge safe)
+    )
 
     _mount_routers(
         app,
@@ -250,6 +271,11 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(providers.router, "/api/providers", ["providers"]),
             _RouterMount(voice.router, "/api/voice", ["voice"]),
             _RouterMount(admin.router, "/api/admin", ["admin"]),
+            _RouterMount(admin_roles_router, "/api/admin", ["admin"]),
+            _RouterMount(pending_users.router, "/api/admin", ["admin"]),
+            _RouterMount(org_members.router, "/api/org", ["org-admin"]),
+            _RouterMount(org_admin.router, "/api/org", ["org-admin"]),
+            _RouterMount(org_mcp.router, "/api/org", ["org-admin"]),
             _RouterMount(backup.router, "/api/admin", ["admin"]),
             _RouterMount(admin_providers_router, "/api/admin/providers", ["admin"]),
             _RouterMount(admin_voice_router, "/api/admin/voice/providers", ["admin"]),
@@ -287,6 +313,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(ollama_models.router, "/api", ["ollama"]),
             _RouterMount(onnx_models.router, "/api", ["onnx"]),
             _RouterMount(plugins.router, "/api", ["plugins"]),
+            _RouterMount(mcp_catalog_router, "/api/admin/mcp-catalog", ["mcp-catalog"]),
         ],
     )
 

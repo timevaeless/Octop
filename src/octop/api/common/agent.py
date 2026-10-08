@@ -58,6 +58,14 @@ def require_agent_row(
             raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by as_user")
     else:
         assert_agent_access_row(row, user)
+        # T2 pluggable hook (octop.api.common.agent_tenancy): by-id shared
+        # agent tenancy + role gate. Lazy import; deleting the module
+        # together with this line restores community behaviour verbatim.
+        # 2026-09-27: gate on the *row's* attribution (owner-org derivation
+        # retired — see agent_tenancy.assert_shared_agent_within_tenant).
+        from octop.api.common.agent_tenancy import assert_shared_agent_within_tenant
+
+        assert_shared_agent_within_tenant(row, user, owner_org=getattr(row, "org_id", None))
     return row
 
 

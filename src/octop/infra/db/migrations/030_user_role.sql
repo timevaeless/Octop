@@ -1,7 +1,10 @@
--- Schema v18: role templates. users.role stores the template public id
+-- Schema v30: role templates. users.role stores the template public id
 -- (admin | user | custom ULID). Invites store the same id in user_invites.role.
 -- Resource policies live in a JSON array; a missing name means that policy is off.
 -- Existing users keep their role values (already admin|user).
+--
+-- Renumbered from upstream 018_user_role: this fork already uses 018 for
+-- multi-tenant (018_multi_tenant) and had shipped 019-029 before merging.
 
 CREATE TABLE IF NOT EXISTS user_role (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,4 +23,4 @@ ALTER TABLE users ADD COLUMN avatar_icon TEXT;
 ALTER TABLE user_invites ADD COLUMN role_name TEXT;
 ALTER TABLE user_invites ADD COLUMN role TEXT;
 
-UPDATE _schema_version SET version = 18;
+UPDATE _schema_version SET version = 30;

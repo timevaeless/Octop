@@ -74,9 +74,17 @@ async def _resolve_device(device: str | None) -> str:
 
 
 def build_mobile_tools(
-    config: OctopConfig, *, user_repo: Any, paths: PathLayout | None = None
+    config: OctopConfig,
+    *,
+    user_repo: Any,
+    paths: PathLayout | None = None,
+    agent_org_lookup: Any = None,
 ) -> list[StructuredTool]:
-    """Return adb mobile tools when ``capabilities.mobile.enabled``."""
+    """Return adb mobile tools when ``capabilities.mobile.enabled``.
+
+    ``agent_org_lookup(agent_id) -> org_id | None`` resolves the agent's
+    tenant so screenshots land in the tenant-scoped workspace (T2-3).
+    """
     if not config.capabilities.mobile.enabled:
         return []
     layout = paths or PathLayout.from_env()
@@ -103,11 +111,14 @@ def build_mobile_tools(
                     {"device": serial, "image_base64": b64, "format": "png"},
                     ensure_ascii=False,
                 )
-            out_dir = layout.agent_workspace(agent_id) / "mobile-screenshots"
+            agent_org = (
+                agent_org_lookup(agent_id) if callable(agent_org_lookup) else None
+            )
+            out_dir = layout.agent_workspace(agent_id, org_id=agent_org) / "mobile-screenshots"
             out_dir.mkdir(parents=True, exist_ok=True)
             stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
             rel = f"mobile-screenshots/mobile_{stamp}.png"
-            path = layout.agent_workspace(agent_id) / rel
+            path = layout.agent_workspace(agent_id, org_id=agent_org) / rel
             path.write_bytes(png)
             return json.dumps({"device": serial, "path": rel, "format": "png"}, ensure_ascii=False)
         except Exception as exc:

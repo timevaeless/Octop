@@ -14,10 +14,12 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, model_validator
 
+from octop.api.common.agent import assert_agent_owner
 from octop.api.common.public_base import resolve_public_base
 from octop.api.deps import current_user, get_server, require_permission
 from octop.i18n import tr
 from octop.infra.auth.sso.redirect_after import sanitize_redirect_after
+from octop.infra.agents.visibility import assignable_mcp_servers
 from octop.infra.connectors.builder import (
     mcp_server_name,
     normalize_weiyun_mcp_token,
@@ -282,6 +284,25 @@ def _connector_service(server: Any) -> ConnectorService:
         settings_repo=server.services.settings_repo,
         config=server.services.config,
     )
+
+
+def _probe_delegate_token(server: Any, user: Any, svc: ConnectorService) -> str | None:
+    """Mint a delegated-identity JWT for probing custom MCP servers.
+
+    ``delegate_identity`` specs carry no static credentials — the harness
+    injects the JWT at config-build time. Probing without it would reach the
+    gateway unauthenticated and fail with 401. Best effort: mint failures
+    degrade to a credential-less probe (same as before this helper existed).
+    """
+    try:
+        from octop.infra.users.context import resolve_authz_context
+
+        repos = server.services.repos
+        authz = resolve_authz_context(repos.user_repo, repos.org_repo, user.id)
+        return svc._delegated_identity_token_for(user.id, authz)
+    except Exception:
+        logger.exception("connector probe: delegated token mint failed for user %s", user.id)
+        return None
 
 
 def _instance_to_dict(inst: Any) -> dict[str, Any]:
@@ -551,13 +572,8 @@ async def detect_weknora_on_octop_host(
     return await detect_local_weknora()
 
 
-@router.get("/connector-instances", summary="List connector instances")
-async def list_instances(
-    user: Any = Depends(current_user),
-    server: Any = Depends(get_server),
-) -> list[dict[str, Any]]:
-    """List the current user's connected accounts (custom MCP expanded per server)."""
-    rows = _connector_service(server).list_instances_for_api(user.id)
+def _with_owner_labels(server: Any, user: Any, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Attach owner username / display name + manage flag to listing rows."""
     for item in rows:
         owner_id = int(item.get("owner_user_id") or user.id)
         owner = server.services.user_repo.get(owner_id)
@@ -567,6 +583,56 @@ async def list_instances(
         )
         item["can_manage"] = owner_id == user.id or user.role == "admin"
     return rows
+
+
+@router.get("/connector-instances", summary="List connector instances")
+async def list_instances(
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> list[dict[str, Any]]:
+    """List the current user's connected accounts (custom MCP expanded per server)."""
+    from octop.infra.users.context import authz_context_from_user
+
+    rows = _connector_service(server).list_instances_for_api(
+        user.id, authz=authz_context_from_user(user)
+    )
+    return _with_owner_labels(server, user, rows)
+
+
+@router.get(
+    "/connector-instances/assignable",
+    summary="List connectors attachable to an expert",
+)
+async def list_assignable_instances(
+    agent_id: str | None = Query(
+        None,
+        description=(
+            "Agent whose owner's scope to list; omit for an agent about to be "
+            "created (owner = caller)"
+        ),
+    ),
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> list[dict[str, Any]]:
+    """Connectors the expert's **owner** may attach — the scope saving enforces.
+
+    Deliberately not ``list_instances``: that one is the *viewer's* own listing,
+    so an admin editing someone else's expert sees the admin's connectors while
+    the save validates against the owner's
+    (``AgentManager.validate_mcp_servers`` → ``CONNECTOR_NOT_BOUND``). The
+    composer-defaults picker reads this endpoint instead so shown always equals
+    accepted. Must stay declared before ``/connector-instances/{instance_id}``,
+    which would otherwise swallow ``assignable`` as a path parameter.
+    """
+    assert server.app_runtime is not None
+    registry = server.app_runtime.agent_registry
+    if agent_id is not None:
+        row = registry.get_row(agent_id)
+        if row is None:
+            raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+        assert_agent_owner(row, user)
+    rows = assignable_mcp_servers(registry, agent_id, user_id=user.id) or []
+    return _with_owner_labels(server, user, rows)
 
 
 @router.get("/connectors/custom-mcp", summary="Get custom MCP servers")
@@ -587,8 +653,11 @@ async def put_custom_mcp(
 ) -> dict[str, Any]:
     """Replace the user's custom MCP servers document and reload agents."""
     svc = _connector_service(server)
+    # 2026-09-27 attribution hook (pluggable: resource_attribution).
+    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+
     try:
-        servers = svc.put_custom_servers(user.id, body.servers)
+        servers = svc.put_custom_servers(user.id, body.servers, org_id=_creator_org_id(user))
     except ConnectorNameTakenError as exc:
         _raise_name_taken(str(exc))
     except ValueError as exc:
@@ -598,6 +667,7 @@ async def put_custom_mcp(
         action="connector.custom_mcp.save",
         target=CUSTOM_MCP_KIND,
         payload=str(len(servers)),
+        org_id=user.org_id or None,
     )
     _schedule_connector_reload(
         server,
@@ -663,7 +733,9 @@ async def test_custom_mcp(
             ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
             "provide name or server spec to probe",
         )
-    result = await probe_custom_mcp_server(spec)
+    result = await probe_custom_mcp_server(
+        spec, delegate_token=_probe_delegate_token(server, user, svc)
+    )
     if body.name:
         try:
             if result.get("oauth", {}).get("available") and not oauth_configured(spec):
@@ -752,6 +824,9 @@ async def create_instance(
         ) from exc
 
     instance_id = new_ulid()
+    # 2026-09-27 attribution hook (pluggable: resource_attribution).
+    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+
     repo.create(
         instance_id=instance_id,
         user_id=user.id,
@@ -759,6 +834,10 @@ async def create_instance(
         display_name=display_name,
         mcp_server_name=mcp_server_name(body.kind, instance_id),
         shared=body.shared,
+        # 2026-09-27 attribution rule (pluggable: resource_attribution): a
+        # platform admin creates *unattributed* (admin-only until assigned on
+        # the resource-acl face); a tenant user stamps their own tenant.
+        org_id=_creator_org_id(user),
         config_json=build_instance_config_json(
             kind=body.kind,
             default_open=bool(body.default_open),
@@ -772,6 +851,7 @@ async def create_instance(
         action="connector.instance.create",
         target=instance_id,
         payload=body.kind,
+        org_id=user.org_id or None,
     )
     inst = repo.get(instance_id)
     assert inst is not None
@@ -937,6 +1017,7 @@ async def delete_instance(
             action="connector.custom_mcp.delete_server",
             target=synthetic_name,
             payload=CUSTOM_MCP_KIND,
+            org_id=user.org_id or None,
         )
         _schedule_connector_reload(server, custom_user_id, all_users=True)
         return
@@ -984,6 +1065,7 @@ async def delete_instance(
         actor=user.username,
         action="connector.instance.delete",
         target=instance_id,
+        org_id=user.org_id or None,
     )
 
 
@@ -1003,7 +1085,11 @@ async def test_instance(
         raw = saved.get(synthetic_name)
         if not isinstance(raw, dict):
             raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
-        return await probe_custom_mcp_server(dict(raw))
+        # delegate_identity specs carry no static credentials — probe with the
+        # same delegated-identity JWT the harness would get for this caller.
+        return await probe_custom_mcp_server(
+            dict(raw), delegate_token=_probe_delegate_token(server, user, svc)
+        )
 
     repo = server.services.repos.connector_repo
     inst = repo.get(instance_id)

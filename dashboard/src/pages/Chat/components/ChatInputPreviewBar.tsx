@@ -1,34 +1,16 @@
 import { Image } from "antd";
-import { X, FileText, Cpu } from "lucide-react";
+import { X, FileText } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useAuthImageSrc } from "../../../hooks/useAuthImageSrc";
 import type { ChatAttachment } from "../hooks/useChat";
-import type { KnowledgeBase } from "../../../api/modules/knowledgeBases";
-import { ConnectorLogo } from "../../Agent/Connectors/connectorDefs";
-import { knowledgeIconForName } from "../../KnowledgeBases/knowledgeIcons";
 import { inferKindFromNameAndMime } from "../utils/chatAttachments";
 import { ChatMediaPlayer } from "./ChatMediaPlayer";
-import ContextChip from "./ContextChip";
-import { modelShortLabel } from "../../../utils/modelOptions";
 import styles from "../index.module.less";
 
 interface ChatInputPreviewBarProps {
   attachments: ChatAttachment[];
   uploading: boolean;
-  selectedConnectors: string[];
-  selectedKnowledgeBaseIds: string[];
-  selectedModel?: string | null;
-  availableConnectors?: {
-    mcp_server_name: string;
-    label: string;
-    kind: string;
-    default_open?: boolean;
-  }[];
-  availableKnowledgeBases?: KnowledgeBase[];
   onRemoveAttachment: (index: number) => void;
-  onConnectorsChange?: (names: string[]) => void;
-  onKnowledgeBaseIdsChange?: (ids: string[]) => void;
-  onModelChange?: (model: string | null) => void;
 }
 
 function ComposerImagePreview({
@@ -90,28 +72,9 @@ function ComposerImagePreview({
 export default function ChatInputPreviewBar({
   attachments,
   uploading,
-  selectedConnectors,
-  selectedKnowledgeBaseIds,
-  availableConnectors,
-  availableKnowledgeBases,
   onRemoveAttachment,
-  onConnectorsChange,
-  onKnowledgeBaseIdsChange,
-  selectedModel,
-  onModelChange,
 }: ChatInputPreviewBarProps) {
-  // Show the chip whenever a model is explicitly selected, mirroring how
-  // connectors behave — not only when it differs from the
-  // agent default (that was the old "override" behavior).
-  const selectedModelValue = (selectedModel || "").trim();
-  const showModelChip = selectedModelValue.length > 0 && !!onModelChange;
-
-  const hasContent =
-    attachments.length > 0 ||
-    uploading ||
-    selectedConnectors.length > 0 ||
-    selectedKnowledgeBaseIds.length > 0 ||
-    showModelChip;
+  const hasContent = attachments.length > 0 || uploading;
 
   if (!hasContent) return null;
 
@@ -217,52 +180,6 @@ export default function ChatInputPreviewBar({
             <div className={styles.uploadSpinner} />
           </div>
         </div>
-      )}
-      {availableConnectors &&
-        onConnectorsChange &&
-        selectedConnectors.map((name) => {
-          const c = availableConnectors.find((x) => x.mcp_server_name === name);
-          if (!c) return null;
-          return (
-            <ContextChip
-              key={name}
-              variant="connector"
-              icon={<ConnectorLogo kind={c.kind} size={16} />}
-              label={c.label}
-              onRemove={() =>
-                onConnectorsChange(selectedConnectors.filter((n) => n !== name))
-              }
-            />
-          );
-        })}
-      {availableKnowledgeBases &&
-        onKnowledgeBaseIdsChange &&
-        selectedKnowledgeBaseIds.map((id) => {
-          const knowledgeBase = availableKnowledgeBases.find(
-            (base) => base.id === id,
-          );
-          if (!knowledgeBase) return null;
-          return (
-            <ContextChip
-              key={id}
-              variant="knowledge"
-              icon={knowledgeIconForName(knowledgeBase.icon_name, 12)}
-              label={knowledgeBase.name}
-              onRemove={() =>
-                onKnowledgeBaseIdsChange(
-                  selectedKnowledgeBaseIds.filter((baseId) => baseId !== id),
-                )
-              }
-            />
-          );
-        })}
-      {showModelChip && (
-        <ContextChip
-          variant="model"
-          icon={<Cpu size={12} strokeWidth={2.2} aria-hidden />}
-          label={modelShortLabel(selectedModelValue)}
-          onRemove={() => onModelChange?.(null)}
-        />
       )}
     </div>
   );

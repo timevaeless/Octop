@@ -40,6 +40,19 @@
       (function () {
         var KEY = "theme";
         var mode = "light";
+        var DEFAULT_PALETTE = "xhs";
+        var PALETTES = [
+          "xhs",
+          "rose",
+          "tech",
+          "indigo",
+          "teal",
+          "violet",
+          "emerald",
+          "amber",
+          "slate",
+        ];
+        var palette = DEFAULT_PALETTE;
         function systemDark() {
           try {
             return window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -62,6 +75,11 @@
             ) {
               pref = parsed.preference;
             }
+            // Brand palette is orthogonal to light/dark; mirror
+            // appearanceStorage.ts so first paint matches the stored skin.
+            if (parsed && PALETTES.indexOf(parsed.palette) !== -1) {
+              palette = parsed.palette;
+            }
           }
           if (pref === "dark" || (pref === "system" && systemDark())) {
             mode = "dark";
@@ -70,6 +88,7 @@
           if (systemDark()) mode = "dark";
         }
         document.documentElement.setAttribute("data-theme", mode);
+        document.documentElement.setAttribute("data-palette", palette);
         var themeColor = mode === "dark" ? "#1a1c28" : "#ffffff";
         var metas = document.querySelectorAll('meta[name="theme-color"]');
         for (var i = 0; i < metas.length; i++) {
@@ -110,8 +129,8 @@
           max(24px, env(safe-area-inset-left, 0px));
         margin: 0;
         background: #f7f8fa;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-          "Noto Sans SC", sans-serif;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC",
+          "Segoe UI", "Noto Sans SC", sans-serif;
         color: #8b8fa3;
       }
       html[data-theme="dark"],
@@ -140,6 +159,15 @@
       html[data-theme="dark"] #octop-boot-ring {
         border-color: rgba(240, 139, 154, 0.22);
         border-top-color: #f08b9a;
+      }
+      /* Xiaohongshu-red skin (default palette) */
+      html[data-palette="xhs"] #octop-boot-ring {
+        border-color: rgba(255, 36, 66, 0.18);
+        border-top-color: #ff2442;
+      }
+      html[data-palette="xhs"][data-theme="dark"] #octop-boot-ring {
+        border-color: rgba(255, 122, 140, 0.22);
+        border-top-color: #ff7a8c;
       }
       .octop-boot-logo {
         position: absolute;

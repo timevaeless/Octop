@@ -1,6 +1,7 @@
 /** Brand palettes — orthogonal to light/dark mode (`data-theme`). */
 
 export type ThemePalette =
+  | "xhs"
   | "rose"
   | "tech"
   | "indigo"
@@ -12,6 +13,7 @@ export type ThemePalette =
   | "custom";
 
 export const VALID_PALETTES: ThemePalette[] = [
+  "xhs",
   "rose",
   "tech",
   "indigo",
@@ -25,7 +27,8 @@ export const VALID_PALETTES: ThemePalette[] = [
 /** Curated palettes only — "custom" is handled separately via a hex value. */
 export const CURATED_PALETTES: ThemePalette[] = [...VALID_PALETTES];
 
-export const DEFAULT_PALETTE: ThemePalette = "rose";
+/** Flagship brand skin: Xiaohongshu red. */
+export const DEFAULT_PALETTE: ThemePalette = "xhs";
 export const DEFAULT_CUSTOM_COLOR = "#4B74FA";
 
 /** True when the value is one of the curated palette keys (not "custom"/hex). */
@@ -44,6 +47,9 @@ export const PALETTE_STORAGE_KEY = LEGACY_PALETTE_STORAGE_KEY;
 
 /** Swatch color shown in the palette picker (light brand). */
 export const PALETTE_SWATCH: Record<ThemePalette, string> = {
+  // Xiaohongshu brand red — picker swatch only; solid UI tokens are darkened
+  // for WCAG AA white-text contrast (see ANTD_BRAND_TOKENS.xhs).
+  xhs: "#FF2442",
   rose: "#E85D75",
   tech: "#4B74FA",
   indigo: "#6366F1",
@@ -74,6 +80,30 @@ export const ANTD_BRAND_TOKENS: Record<
   Exclude<ThemePalette, "custom">,
   { light: AntdBrandTokens; dark: AntdBrandTokens }
 > = {
+  xhs: {
+    // Xiaohongshu-inspired red. #FF2442 itself only reaches ~3.8:1 against
+    // white, so solid states use darkened variants (#E0254A family, ≥4.5:1)
+    // while brightening to the true brand hue for text/links in dark mode.
+    light: {
+      colorPrimary: "#E0254A",
+      colorPrimaryHover: "#C81E3E",
+      colorPrimaryActive: "#A81735",
+      colorLink: "#E0254A",
+    },
+    dark: {
+      colorPrimary: "#E0254A",
+      colorPrimaryBg: "rgba(255, 36, 66, 0.14)",
+      colorPrimaryBgHover: "rgba(255, 36, 66, 0.2)",
+      colorPrimaryBorder: "rgba(255, 36, 66, 0.3)",
+      colorPrimaryBorderHover: "rgba(255, 36, 66, 0.4)",
+      colorPrimaryHover: "#C81E3E",
+      colorPrimaryActive: "#A81735",
+      colorPrimaryText: "#FF7A8C",
+      colorPrimaryTextHover: "#FF9DA9",
+      colorPrimaryTextActive: "#FF4D66",
+      colorLink: "#FF7A8C",
+    },
+  },
   rose: {
     light: {
       colorPrimary: "#E85D75",

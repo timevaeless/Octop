@@ -10,6 +10,7 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.orgs import OrgRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import service as service_module
@@ -277,3 +278,120 @@ def test_update_base_validates_max_documents_range(service: KnowledgeService) ->
     # Omit keeps value
     service.update_base(kb.id, actor_user_id=owner, description="keep")
     assert service.get_readable_base(kb.id, actor_user_id=owner).max_documents == 10_000
+
+
+# ----- tenant ACL on shared knowledge bases (T2 inventory, 2026-09-26) -----
+
+
+@pytest.fixture
+def tenanted_service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KnowledgeService:
+    """Same as ``service`` but with ``org_repo`` wired (production shape)."""
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    services = SimpleNamespace(
+        knowledge_repo=KnowledgeRepo(pool),
+        settings_repo=SettingsRepo(pool),
+        user_repo=UserRepo(pool),
+        org_repo=OrgRepo(pool),
+        paths=PathLayout.from_env(),
+    )
+    monkeypatch.setattr(service_module, "assert_knowledge_usable", lambda *_args: None)
+    return KnowledgeService(services)
+
+
+def _make_tenant(
+    svc: KnowledgeService, org_id: str, username: str, role_keys: list[str]
+) -> int:
+    """One org + one active member with the given ability-package keys."""
+    orgs: OrgRepo = svc._services.org_repo
+    orgs.create_org(org_id=org_id, name=org_id)
+    with svc._services.knowledge_repo._db.transaction() as conn:
+        cur = conn.execute(
+            "INSERT INTO users(username, role, created_at) VALUES (?, 'user', 0)",
+            (username,),
+        )
+        user_id = int(cur.lastrowid)
+        conn.execute(
+            "UPDATE users SET default_org_id = ? WHERE id = ?", (org_id, user_id)
+        )
+    orgs.upsert_membership(user_id, org_id, role_keys=role_keys)
+    return user_id
+
+
+def _shared_kb_in_tenant(svc: KnowledgeService, owner_id: int, org_id: str, roles: list[str]):
+    kb = svc._services.knowledge_repo.create_base(
+        owner_user_id=owner_id, name=f"kb-{org_id}", shared=True
+    )
+    with svc._services.knowledge_repo._db.transaction() as conn:
+        conn.execute(
+            "UPDATE knowledge_bases SET org_id = ? WHERE knowledge_base_id = ?",
+            (org_id, kb.id),
+        )
+    svc._services.knowledge_repo.set_allowed_roles(kb.id, roles)
+    return kb
+
+
+def test_shared_kb_readable_within_same_tenant_with_role(
+    tenanted_service: KnowledgeService,
+) -> None:
+    svc = tenanted_service
+    owner = _make_tenant(svc, "org-a", "owner-a", [])
+    viewer = _make_tenant(svc, "org-a", "viewer-a", ["analyst"])
+    kb = _shared_kb_in_tenant(svc, owner, "org-a", ["analyst"])
+
+    assert svc.get_readable_base(kb.id, actor_user_id=viewer).id == kb.id
+
+
+def test_shared_kb_denied_to_other_tenant(tenanted_service: KnowledgeService) -> None:
+    svc = tenanted_service
+    owner = _make_tenant(svc, "org-a", "owner-a", [])
+    outsider = _make_tenant(svc, "org-b", "viewer-b", ["analyst"])
+    kb = _shared_kb_in_tenant(svc, owner, "org-a", ["analyst"])
+
+    with pytest.raises(PermissionError, match="read"):
+        svc.get_readable_base(kb.id, actor_user_id=outsider)
+
+
+def test_shared_kb_denied_same_tenant_without_role(
+    tenanted_service: KnowledgeService,
+) -> None:
+    svc = tenanted_service
+    owner = _make_tenant(svc, "org-a", "owner-a", [])
+    no_role = _make_tenant(svc, "org-a", "viewer-a2", [])
+    kb = _shared_kb_in_tenant(svc, owner, "org-a", ["analyst"])
+
+    with pytest.raises(PermissionError, match="read"):
+        svc.get_readable_base(kb.id, actor_user_id=no_role)
+
+
+def test_shared_kb_denied_to_viewer_without_tenancy(
+    tenanted_service: KnowledgeService,
+) -> None:
+    svc = tenanted_service
+    owner = _make_tenant(svc, "org-a", "owner-a", [])
+    orgless = svc._services.user_repo.create(username="orgless", password_hash="h", role="user")
+    kb = _shared_kb_in_tenant(svc, owner, "org-a", [])
+
+    with pytest.raises(PermissionError, match="read"):
+        svc.get_readable_base(kb.id, actor_user_id=orgless)
+
+
+def test_shared_kb_owner_still_reads_own_base(tenanted_service: KnowledgeService) -> None:
+    svc = tenanted_service
+    owner = _make_tenant(svc, "org-a", "owner-a", [])
+    kb = _shared_kb_in_tenant(svc, owner, "org-a", ["some-role"])
+
+    assert svc.get_readable_base(kb.id, actor_user_id=owner).id == kb.id
+
+
+def test_legacy_fixture_without_org_repo_keeps_shared_readable(
+    service: KnowledgeService,
+) -> None:
+    """Services without tenancy repos (test/legacy) keep the old behavior."""
+    users = service._services.user_repo
+    owner = users.create(username="owner-x", password_hash="h", role="user")
+    viewer = users.create(username="viewer-x", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+
+    assert service.get_readable_base(kb.id, actor_user_id=viewer).id == kb.id

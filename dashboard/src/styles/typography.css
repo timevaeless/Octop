@@ -1,0 +1,90 @@
+/* ===================================================================
+   Octop global typography — consumes the --fn-font-* tokens declared
+   in theme-vars.css so font choices stay centralized per theme.
+   Imported after layout.css so these rules win the cascade.
+   =================================================================== */
+
+html,
+body {
+  font-family: var(--fn-font-family-base);
+  font-size: var(--fn-font-size-md);
+  font-weight: var(--fn-font-weight-body);
+  line-height: var(--fn-line-height-base);
+  letter-spacing: var(--fn-letter-spacing-body);
+}
+
+/* ---- Headings: tighter leading, heavier weight, compact tracking ---- */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.octop-typography h1,
+.octop-typography h2,
+.octop-typography h3,
+.octop-typography h4,
+.octop-typography h5,
+.octop-typography h6 {
+  font-family: var(--fn-font-family-heading);
+  font-weight: var(--fn-font-weight-heading);
+  line-height: var(--fn-line-height-tight);
+  letter-spacing: var(--fn-letter-spacing-heading);
+}
+
+h1 {
+  font-size: calc(var(--fn-font-size-xl) + 6px);
+}
+
+h2 {
+  font-size: calc(var(--fn-font-size-xl) + 2px);
+}
+
+h3 {
+  font-size: var(--fn-font-size-xl);
+}
+
+h4 {
+  font-size: var(--fn-font-size-lg);
+}
+
+h5 {
+  font-size: var(--fn-font-size-md);
+}
+
+h6 {
+  font-size: var(--fn-font-size-sm);
+}
+
+/* ---- Auxiliary text: slightly smaller, wider tracking ---- */
+small,
+caption,
+figcaption,
+.octop-typography-caption {
+  font-size: var(--fn-font-size-sm);
+  letter-spacing: var(--fn-letter-spacing-caption);
+  line-height: var(--fn-line-height-base);
+}
+
+/* ---- Monospace surfaces ---- */
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--fn-font-family-mono);
+  font-variant-ligatures: none;
+}
+
+/* ---- Numeric alignment for tables/stat widgets ---- */
+.octop-tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Selection: soft brand tint instead of system blue ---- */
+::selection {
+  background: color-mix(
+    in srgb,
+    var(--fn-color-brand, #e85d75) 18%,
+    transparent
+  );
+}

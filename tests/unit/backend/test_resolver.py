@@ -17,8 +17,23 @@ from octop.infra.backend.resolver import (
     _is_host_root,
     backend_spec_supports_execution,
     default_agent_backend_spec,
+    normalize_backend_config,
     windows_neutralize_host_root,
 )
+
+
+def test_normalize_backend_config_default_strings_map_to_none() -> None:
+    """Bare 'default'/empty strings mean "use the default backend" (regression J30EMZ)."""
+    assert normalize_backend_config("default") is None
+    assert normalize_backend_config(" Default ") is None
+    assert normalize_backend_config("") is None
+    assert normalize_backend_config("   ") is None
+    # Non-string and meaningful values pass through untouched.
+    spec = {"type": "local_shell", "root_dir": "/"}
+    assert normalize_backend_config(spec) is spec
+    assert normalize_backend_config(None) is None
+    assert normalize_backend_config("local_shell") == "local_shell"
+    assert normalize_backend_config("named:my-s3") == "named:my-s3"
 
 
 def test_default_agent_backend_spec_posix_uses_host_root(tmp_path: Path) -> None:

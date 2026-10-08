@@ -1,6 +1,7 @@
 """Knowledge-base ownership checks and document upload orchestration.
 
-Visibility is owner or instance-wide ``shared``.
+Visibility: admin / owner, or instance-wide ``shared`` **within the tenant**
+(shared_resource_visible: org hard boundary + allowed_roles narrowing).
 """
 
 from __future__ import annotations
@@ -102,6 +103,7 @@ class KnowledgeService:
         shared: bool = False,
         icon_name: str = "",
         max_documents: int = MAX_DOCS_PER_KB,
+        org_id: str | None = None,
     ) -> KnowledgeBaseRow:
         assert_knowledge_usable(
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
@@ -123,15 +125,24 @@ class KnowledgeService:
                 icon_name=icon_name,
                 embedding_model=model,
                 max_documents=max_documents,
+                org_id=org_id,
             ),
         )
 
     def list_visible_bases(
-        self, *, actor_user_id: int, is_admin: bool = False
+        self,
+        *,
+        actor_user_id: int,
+        is_admin: bool = False,
+        org_id: str | None = None,
+        role_keys: list[str] | None = None,
     ) -> list[KnowledgeBaseRow]:
         if is_admin:
             return cast(list[KnowledgeBaseRow], self._repo.list_all())
-        return cast(list[KnowledgeBaseRow], self._repo.list_visible(actor_user_id))
+        return cast(
+            list[KnowledgeBaseRow],
+            self._repo.list_visible(actor_user_id, org_id=org_id, role_keys=role_keys),
+        )
 
     def update_base(
         self,
@@ -180,13 +191,13 @@ class KnowledgeService:
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> dict[str, str]:
         """Return extracted plain text for a readable knowledge document."""
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
-        path = document_path(kb_id, doc_id, document.filename)
+        path = document_path(kb_id, doc_id, document.filename, org_id=base.org_id)
         text = parse_document(path, ocr=optional_ocr_extractor(self._services))
         if len(text) > _MAX_PREVIEW_CHARS:
             text = text[:_MAX_PREVIEW_CHARS]
@@ -204,13 +215,13 @@ class KnowledgeService:
         Raises ``LookupError`` when the document row is missing and
         ``FileNotFoundError`` when the original bytes are gone from disk.
         """
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
-        path = document_path(kb_id, doc_id, document.filename)
+        path = document_path(kb_id, doc_id, document.filename, org_id=base.org_id)
         if not path.is_file():
             raise FileNotFoundError("knowledge document original file not found")
         return path, document.filename, document.content_type
@@ -219,13 +230,16 @@ class KnowledgeService:
         """True when the uploaded original still exists on disk."""
         if document.is_dir:
             return False
-        return document_path(document.kb_id, document.id, document.filename).is_file()
+        base = self._repo.get_base(document.kb_id)
+        return document_path(
+            document.kb_id, document.id, document.filename, org_id=getattr(base, "org_id", None)
+        ).is_file()
 
     def read_text_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> dict[str, str]:
         """Return raw UTF-8 text for an editable md/txt knowledge document."""
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
@@ -233,7 +247,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.content_type not in _TEXT_CONTENT_TYPES:
             raise ValueError("unsupported knowledge document content type: not editable text")
-        raw = document_path(kb_id, doc_id, document.filename).read_bytes()
+        raw = document_path(kb_id, doc_id, document.filename, org_id=base.org_id).read_bytes()
         try:
             text = raw.decode("utf-8")
         except UnicodeDecodeError as exc:
@@ -295,7 +309,7 @@ class KnowledgeService:
         assert_knowledge_usable(
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
         )
-        self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
@@ -307,7 +321,7 @@ class KnowledgeService:
         limit = self._max_document_bytes()
         if len(encoded) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
-        write_document(kb_id, document.id, document.filename, encoded)
+        write_document(kb_id, document.id, document.filename, encoded, org_id=base.org_id)
         self._repo.update_document(
             doc_id,
             byte_size=len(encoded),
@@ -324,9 +338,37 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if is_admin or base.owner_user_id == actor_user_id or base.shared:
+        if is_admin or base.owner_user_id == actor_user_id:
+            return base
+        if base.shared and self._shared_visible_within_tenant(
+            base, actor_user_id=actor_user_id
+        ):
             return base
         raise PermissionError("knowledge base read access is required")
+
+    def _shared_visible_within_tenant(
+        self, base: KnowledgeBaseRow, *, actor_user_id: int
+    ) -> bool:
+        """Tenant ACL for a shared KB the viewer neither owns nor administers.
+
+        ``base.shared`` alone used to grant instance-wide read access, which let
+        any tenant read a cross-tenant shared base by id (T2 inventory, 2026-09-26).
+        The canonical tenancy predicate is the single rule source here; the
+        authz context is resolved from storage because the internal read paths
+        (document list/download/search) hold only ``actor_user_id``.
+        Test/legacy services without tenancy repos keep the old behavior.
+        """
+        user_repo = getattr(self._services, "user_repo", None)
+        org_repo = getattr(self._services, "org_repo", None)
+        if user_repo is None or org_repo is None:
+            return True
+        from octop.infra.users.context import authz_binding
+        from octop.infra.users.tenancy import shared_resource_visible
+
+        with authz_binding(user_repo, org_repo, actor_user_id) as authz:
+            return shared_resource_visible(
+                base.org_id, base.allowed_roles, authz, admin_cross_tenant=True
+            )
 
     def get_writable_base(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -384,7 +426,7 @@ class KnowledgeService:
             max_documents=base.max_documents,
         )
         try:
-            write_document(kb_id, document.id, name, content)
+            write_document(kb_id, document.id, name, content, org_id=base.org_id)
         except Exception:
             self._repo.delete_document(document.id)
             raise
@@ -393,7 +435,7 @@ class KnowledgeService:
     def delete_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> None:
-        self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
@@ -402,7 +444,7 @@ class KnowledgeService:
             if row.is_dir:
                 continue
             KnowledgeIndex(kb_id).delete_doc(row.id)
-            delete_document_file(kb_id, row.id, row.filename)
+            delete_document_file(kb_id, row.id, row.filename, org_id=base.org_id)
 
     def reindex_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -450,9 +492,9 @@ class KnowledgeService:
         return cast(KnowledgeDocumentRow, result)
 
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
-        self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         self._repo.delete_base(kb_id)
-        delete_knowledge_base_files(kb_id)
+        delete_knowledge_base_files(kb_id, org_id=base.org_id)
 
     def _require_base(self, kb_id: str) -> KnowledgeBaseRow:
         base = self._repo.get_base(kb_id)

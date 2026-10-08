@@ -57,7 +57,13 @@ def _public_base(request: Request) -> str:
 
 
 def _bad_request(exc: ValueError) -> OctopError:
-    return OctopError.localized(ErrorCode.OIDC_BAD_REQUEST, detail=str(exc))
+    # details must carry the text: to_envelope re-localizes per-request, and
+    # the i18n template leaves {detail} unformatted when no kwargs survive.
+    return OctopError.localized(
+        ErrorCode.OIDC_BAD_REQUEST,
+        detail=str(exc),
+        details={"detail": str(exc)},
+    )
 
 
 def _login_error_redirect(server: Any, public_base: str) -> str:

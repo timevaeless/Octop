@@ -303,6 +303,7 @@ def create_system_backup(
                                 paths=paths,
                                 agent_id=agent_id,
                                 ensure=False,
+                                org_id=getattr(row, "org_id", None),
                             )
                             if not ws.is_dir():
                                 continue
@@ -340,6 +341,14 @@ def create_system_backup(
                         _KNOWLEDGE_DIR,
                         skip_chats=False,
                     )
+                # T2-3 pluggable hook (octop.infra.backup.tenant_layout): the
+                # tenant plane (shared/knowledge + orgs/<org>/knowledge) is
+                # packed by that module; the legacy flat dir above keeps
+                # working (adopt-legacy). Deleting the module together with
+                # this line restores the community flat-only backup verbatim.
+                from octop.infra.backup.tenant_layout import add_tenant_knowledge_trees
+
+                add_tenant_knowledge_trees(tf, paths, include_knowledge=include_knowledge)
 
         partial.replace(dest)
     except Exception:
@@ -629,6 +638,12 @@ def restore_system_backup(
                 paths.knowledge_dir,
                 _KNOWLEDGE_DIR,
             )
+            # T2-3 pluggable hook (octop.infra.backup.tenant_layout): restore
+            # of the tenant plane. Lazy import; deleting the module together
+            # with this line restores community behaviour verbatim.
+            from octop.infra.backup.tenant_layout import restore_tenant_knowledge_trees
+
+            restored_knowledge_files += restore_tenant_knowledge_trees(extracted, paths)
 
         preserved_chat_rows, skipped_chat_rows = (
             restore_preserved_chats(pool, saved_chats) if saved_chats is not None else (0, 0)

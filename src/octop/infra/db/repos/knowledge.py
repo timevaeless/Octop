@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts, partial_updates
+from octop.infra.db.repos._base import (
+    DbRow,
+    bool_int,
+    map_rows,
+    now_ts,
+    partial_updates,
+    # (roles_allow moved to octop.infra.users.resource_acl — T2 pluggable hook)
+)
 from octop.infra.knowledge.relpath import (
     ancestor_dirs,
     normalize_kb_path,
@@ -16,6 +25,14 @@ from octop.infra.knowledge.relpath import (
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _DIR_CONTENT_TYPE = "application/x-directory"
+
+
+def _parse_role_list(raw: object) -> list[str]:
+    # T2 pluggable hook (octop.infra.users.resource_acl): shared ACL parser
+    # (was one of four byte-identical copies woven into the repos).
+    from octop.infra.users.resource_acl import parse_role_list
+
+    return parse_role_list(raw)
 
 
 @dataclass(frozen=True)
@@ -34,6 +51,9 @@ class KnowledgeBaseRow:
     max_documents: int
     created_at: int
     updated_at: int
+    # Tenancy + resource ACL (016/017).
+    org_id: str | None = None
+    allowed_roles: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, r: DbRow) -> KnowledgeBaseRow:
@@ -56,6 +76,10 @@ class KnowledgeBaseRow:
             max_documents=max_doc,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
+            org_id=(str(r["org_id"]) if r["org_id"] not in (None, "") else None)
+            if "org_id" in keys
+            else None,
+            allowed_roles=_parse_role_list(r["allowed_roles"] if "allowed_roles" in keys else None),
         )
 
 
@@ -119,6 +143,7 @@ class KnowledgeRepo:
         embedding_model: str = "",
         embedding_dim: int = 0,
         max_documents: int | None = None,
+        org_id: str | None = None,
     ) -> KnowledgeBaseRow:
         kb_id = self._allocate_base_id()
         ts = now_ts()
@@ -128,28 +153,7 @@ class KnowledgeRepo:
                 conn.execute(
                     "INSERT INTO knowledge_bases("
                     "knowledge_base_id, owner_user_id, name, description, default_open, shared, "
-                    "icon_name, embedding_model, embedding_dim, doc_count, created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
-                    (
-                        kb_id,
-                        owner_user_id,
-                        name,
-                        description,
-                        bool_int(default_open),
-                        bool_int(shared),
-                        icon_name,
-                        embedding_model,
-                        embedding_dim,
-                        ts,
-                        ts,
-                    ),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO knowledge_bases("
-                    "knowledge_base_id, owner_user_id, name, description, default_open, shared, "
-                    "icon_name, embedding_model, embedding_dim, doc_count, max_documents, "
-                    "created_at, updated_at"
+                    "icon_name, embedding_model, embedding_dim, doc_count, org_id, created_at, updated_at"
                     ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                     (
                         kb_id,
@@ -161,7 +165,30 @@ class KnowledgeRepo:
                         icon_name,
                         embedding_model,
                         embedding_dim,
+                        org_id,
+                        ts,
+                        ts,
+                    ),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO knowledge_bases("
+                    "knowledge_base_id, owner_user_id, name, description, default_open, shared, "
+                    "icon_name, embedding_model, embedding_dim, doc_count, max_documents, "
+                    "org_id, created_at, updated_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+                    (
+                        kb_id,
+                        owner_user_id,
+                        name,
+                        description,
+                        bool_int(default_open),
+                        bool_int(shared),
+                        icon_name,
+                        embedding_model,
+                        embedding_dim,
                         max_documents,
+                        org_id,
                         ts,
                         ts,
                     ),
@@ -171,7 +198,21 @@ class KnowledgeRepo:
             raise RuntimeError(f"knowledge base insert failed: {kb_id}")
         return row
 
-    def list_visible(self, user_id: int) -> list[KnowledgeBaseRow]:
+    def list_visible(
+        self,
+        user_id: int,
+        *,
+        org_id: str | None = None,
+        role_keys: Sequence[str] | None = None,
+    ) -> list[KnowledgeBaseRow]:
+        """Bases the user may see.
+
+        Own bases are always visible. Shared bases are gated by tenancy + the
+        resource ACL: a shared row with ``org_id`` set is invisible outside
+        that tenant; a non-empty ``allowed_roles`` only shows to holders of
+        those ability packages. ``role_keys=None`` disables the role filter
+        (platform-admin paths).
+        """
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT kb.* FROM knowledge_bases kb "
@@ -179,7 +220,22 @@ class KnowledgeRepo:
                 "ORDER BY kb.name",
                 (user_id,),
             ).fetchall()
-        return map_rows(rows, KnowledgeBaseRow)
+        mapped = map_rows(rows, KnowledgeBaseRow)
+        # T2 pluggable hook (octop.infra.users.resource_acl): tenancy + ACL
+        # gate for shared rows. Lazy import; deleting the module restores
+        # community behaviour verbatim.
+        from octop.infra.users.resource_acl import visible_shared_row
+
+        out: list[KnowledgeBaseRow] = []
+        for row in mapped:
+            if row.owner_user_id == user_id:
+                out.append(row)
+                continue
+            if visible_shared_row(
+                row.org_id, row.allowed_roles, viewer_org_id=org_id, role_keys=role_keys
+            ):
+                out.append(row)
+        return out
 
     def list_all(self) -> list[KnowledgeBaseRow]:
         with self._db.connect() as conn:
@@ -201,6 +257,32 @@ class KnowledgeRepo:
                 (kb_id,),
             ).fetchone()
         return KnowledgeBaseRow.from_row(r) if r else None
+
+    def set_allowed_roles(self, kb_id: str, allowed_roles: list[str]) -> None:
+        """Replace the knowledge-base resource ACL (admin surface)."""
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE knowledge_bases SET allowed_roles = ?, updated_at = ? "
+                "WHERE knowledge_base_id = ?",
+                (json.dumps(list(allowed_roles), ensure_ascii=False), now_ts(), kb_id),
+            )
+            if int(cur.rowcount or 0) == 0:
+                raise KeyError(f"knowledge base not found: {kb_id}")
+
+    def set_org_id(self, kb_id: str, org_id: str | None) -> None:
+        """Assign the row's attribution (admin surface; 2026-09-27).
+
+        ``None`` = unattributed, ``'*'`` = explicit platform share, anything
+        else must be an existing tenant id (validated by the router).
+        """
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE knowledge_bases SET org_id = ?, updated_at = ? "
+                "WHERE knowledge_base_id = ?",
+                (org_id, now_ts(), kb_id),
+            )
+            if int(cur.rowcount or 0) == 0:
+                raise KeyError(f"knowledge base not found: {kb_id}")
 
     def update_base(
         self,

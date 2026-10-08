@@ -23,6 +23,9 @@ class InviteRow:
     code: str
     created_by: int
     note: str | None
+    # T4-1 (octop.infra.users.invite_tenancy): tenant the invite binds the
+    # redeemed user into. NULL = community tenant-less invite.
+    org_id: str | None
     created_at: int
     expires_at: int
     used_at: int | None
@@ -39,6 +42,7 @@ class InviteRow:
             code=str(row["code"]),
             created_by=int(row["created_by"]),
             note=row["note"],
+            org_id=row["org_id"],
             created_at=int(row["created_at"]),
             expires_at=int(row["expires_at"]),
             used_at=int(row["used_at"]) if row["used_at"] is not None else None,
@@ -72,6 +76,7 @@ class InviteRepo:
         created_by: int,
         expires_at: int,
         note: str | None = None,
+        org_id: str | None = None,
         role_name: str | None = None,
         role: str | None = None,
     ) -> InviteRow:
@@ -80,9 +85,9 @@ class InviteRepo:
             invite_id = insert_returning_id(
                 conn,
                 "INSERT INTO user_invites("
-                "code, created_by, note, created_at, expires_at, role_name, role"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (code, created_by, note, ts, expires_at, role_name, role),
+                "code, created_by, note, org_id, created_at, expires_at, role_name, role"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (code, created_by, note, org_id, ts, expires_at, role_name, role),
             )
         row = self.get(invite_id)
         assert row is not None
@@ -196,7 +201,15 @@ class InviteRepo:
                 raise ValueError("used")
             fresh = conn.execute("SELECT * FROM user_invites WHERE id = ?", (invite.id,)).fetchone()
             assert fresh is not None
-            return user_id, InviteRow.from_row(fresh)
+            used_invite = InviteRow.from_row(fresh)
+            # T4-1 pluggable hook (octop.infra.users.invite_tenancy): bind the
+            # redeemed user into the invite's tenant (membership + default_org)
+            # inside this same transaction. Lazy import; deleting the module
+            # restores community behaviour verbatim.
+            from octop.infra.users.invite_tenancy import apply_invite_membership
+
+            apply_invite_membership(conn, user_id=user_id, invite=used_invite)
+            return user_id, used_invite
 
 
 def _insert_named_policies(
@@ -228,6 +241,7 @@ def invite_status_payload(invite: InviteRow, *, now: int | None = None) -> dict[
         "id": invite.id,
         "code": invite.code,
         "note": invite.note,
+        "org_id": invite.org_id,
         "created_by": invite.created_by,
         "created_at": invite.created_at,
         "expires_at": invite.expires_at,

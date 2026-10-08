@@ -201,6 +201,23 @@ export function isChatStreamError(message: string | null | undefined): boolean {
   return isModelRetryEnvelope(message);
 }
 
+/**
+ * Whether an assistant **text** message is a ModelRetryMiddleware failure
+ * notice ("Model call failed after N attempts with …") — the only failure
+ * shape the backend surfaces as assistant prose instead of a typed error
+ * event. Deliberately prefix-based, not substring: a full answer that merely
+ * *mentions* a failure (e.g. "weknora search 返回 HTTP 401") is legitimate
+ * content and must not be promoted to an error bubble.
+ */
+export function isModelRetryFailureText(
+  message: string | null | undefined,
+): boolean {
+  if (!message) return false;
+  return normalizeMessage(message)
+    .toLowerCase()
+    .startsWith("model call failed after");
+}
+
 /** Localized guidance for known failures; otherwise the original text. */
 export function formatChatStreamError(
   message: string | null | undefined,

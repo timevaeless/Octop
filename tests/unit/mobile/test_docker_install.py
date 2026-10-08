@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -160,10 +161,18 @@ def test_write_text_privileged_falls_back_to_sudo_tee(
 
 
 @pytest.mark.asyncio
-async def test_probe_tencent_mirror_unreachable() -> None:
-    # 127.0.0.1:1 → connection refused → probe returns False quickly.
-    with patch.object(docker_install, "_TENCENT_MIRROR_HOST", "127.0.0.1"):
-        assert await _probe_tencent_mirror() is False
+async def test_probe_tencent_mirror_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unreachable mirror (connection refused) maps to False.
+
+    Simulates the refusal instead of dialing 127.0.0.1:443 — a real dial can
+    succeed on machines where a local service (e.g. OrbStack) listens on 443.
+    """
+
+    async def _refused(*args: Any, **kwargs: Any) -> Any:
+        raise ConnectionRefusedError("refused")
+
+    monkeypatch.setattr(docker_install.asyncio, "open_connection", _refused)
+    assert await _probe_tencent_mirror() is False
 
 
 @pytest.mark.asyncio

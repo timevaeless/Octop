@@ -14,7 +14,26 @@ from pathlib import Path
 from typing import Any
 
 from octop.infra.db.pool import DatabasePool
+from octop.infra.db.tenancy_schema import (
+    ensure_audit_org_schema as _ensure_audit_org_schema,
+)
+from octop.infra.db.tenancy_schema import (
+    ensure_invite_org_schema as _ensure_invite_org_schema,
+)
+from octop.infra.db.tenancy_schema import (
+    ensure_multi_tenant_schema as _ensure_multi_tenant_schema,
+)
+from octop.infra.db.tenancy_schema import (
+    ensure_resource_acl_schema as _ensure_resource_acl_schema,
+)
 from octop.infra.utils.ulid import new_ulid
+
+# T2 pluggable hook (octop.infra.db.tenancy_schema): the multi-tenant /
+# resource-ACL / audit-org / invite-org schema bootstrap lives in that module
+# (constants + ensure_* functions, ~330 lines). The hooks kept here are the
+# re-export above, the SQLite fast-path branches for versions 18/19/20, and
+# the four tail calls in _run_migrations_inner. Deleting the module together
+# with those restores community migration machinery verbatim.
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
@@ -109,12 +128,18 @@ def _table_exists(db: DatabasePool, table: str) -> bool:
     return row is not None
 
 
-def _ensure_column(db: DatabasePool, table: str, column: str, definition: str) -> None:
-    """Add a missing column on databases created by older Octop builds."""
+def _ensure_column(db: DatabasePool, table: str, column: str, definition: str) -> bool:
+    """Add a missing column on databases created by older Octop builds.
+
+    Returns whether this call is the one that created the column, which is how
+    callers tell "upgrading an old database" from "the column was already
+    there" — the only moment a one-shot backfill of that column is meaningful.
+    """
     if column in _table_columns(db, table):
-        return
+        return False
     with db.connect() as conn:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+    return True
 
 
 _AGENT_PROFILE_COLUMNS = (
@@ -913,7 +938,7 @@ def _ensure_user_invites_schema(db: DatabasePool) -> None:
 
 
 def _ensure_user_role_schema(db: DatabasePool) -> None:
-    """Role templates; users.role / user_invites.role store the template id (v18)."""
+    """Role templates; users.role / user_invites.role store the template id (v30)."""
     if not _table_exists(db, "users"):
         return
     _ensure_column(db, "users", "role_name", "TEXT")
@@ -1697,7 +1722,7 @@ def _reconcile_pre_squash_schema_version(db: DatabasePool) -> None:
                 _ensure_agent_teams_schema(db)
             if max_version >= 17:
                 _ensure_thread_conversation_mode_schema(db)
-            if max_version >= 18:
+            if max_version >= 30:
                 _ensure_user_role_schema(db)
             with db.connect() as conn:
                 conn.execute("UPDATE _schema_version SET version = %s", (max_version,))
@@ -1741,7 +1766,7 @@ def _reconcile_pre_squash_schema_version(db: DatabasePool) -> None:
         _ensure_agent_teams_schema(db)
     if max_version >= 17:
         _ensure_thread_conversation_mode_schema(db)
-    if max_version >= 18:
+    if max_version >= 30:
         _ensure_user_role_schema(db)
     with db.connect() as conn:
         conn.execute("UPDATE _schema_version SET version = ?", (max_version,))
@@ -1898,7 +1923,42 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 18:
+        # Multi-tenant planes (orgs / bindings / memberships / roles /
+        # mappings + per-resource org_id). The helper is idempotent and also
+        # runs at the tail of run_migrations, so a rebuilt table never loses
+        # its tenancy columns.
+        _ensure_multi_tenant_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 19:
+        _ensure_resource_acl_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 20:
+        # Provenance columns (origin / source_org / created_at) live inside
+        # _ensure_multi_tenant_schema; the legacy-stamp backfill only fires on
+        # the startup that actually adds the column, so this call is a no-op
+        # for databases that already have it.
+        _ensure_multi_tenant_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 23:
+        # mcp_tools.source (round-2 review N3). The .sql file uses ALTER TABLE
+        # which cannot be replayed; mirror 017's pattern with an idempotent
+        # column ensure (the CHECK constraint is file-only, sqlite skips it).
+        if _table_exists(db, "mcp_tools"):
+            _ensure_column(db, "mcp_tools", "source", "TEXT NOT NULL DEFAULT 'manual'")
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 36:
+        # Upstream 020_skill_copy_policy renumbered to 036: this fork already
+        # shipped its own 020 (role_mapping_provenance) and consumes versions
+        # up to 035, so the upstream watermark must move past 035.
         _ensure_skill_copy_policy_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
@@ -1909,14 +1969,35 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
 
 
 def run_migrations(db: DatabasePool) -> None:
+    # Migrations run as the table owner (possibly under FORCE RLS from
+    # migration 025) and include backfill UPDATEs that intentionally touch
+    # rows across tenants. Bind the explicit bypass scope for the whole run —
+    # on SQLite this is inert, on Postgres it keeps startup DDL/DML working
+    # while still exercising the policy definitions themselves (CREATE POLICY
+    # is DDL and never subject to the policies).
+    from octop.infra.users.tenancy_context import bind_tenant_scope, reset_tenant_scope
+
+    _bypass_token = bind_tenant_scope(None, bypass=True)
+    try:
+        _run_migrations_inner(db)
+    finally:
+        reset_tenant_scope(_bypass_token)
+
+
+def _run_migrations_inner(db: DatabasePool) -> None:
     if db.dialect == "sqlite":
         _repair_legacy_schema(db)
     for version, path in _discover(db.dialect):
         if version <= _current_version(db):
             continue
-        # v18 touches optional ``user_invites``; use the idempotent helper for both
-        # dialects so restores from pre-invite physical schemas do not fail.
-        if version == 18:
+        # v30 (upstream's 018_user_role, renumbered) touches optional
+        # ``user_invites``; use the idempotent helper for both dialects so
+        # restores from pre-invite physical schemas do not fail.
+        # NOTE: 018 is *not* intercepted here — in this fork 018 is
+        # ``018_multi_tenant`` and must keep going through the dialect branch
+        # below (SQLite → ``_apply_sqlite_migration``, PostgreSQL → the .pg.sql
+        # file).
+        if version == 30:
             _ensure_user_role_schema(db)
             with db.connect() as conn:
                 if db.dialect == "postgresql":
@@ -1958,5 +2039,17 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_thread_conversation_mode_schema(db)
     _ensure_agent_profile_columns(db)
     _ensure_sso_provider_kind_schema(db)
+    # Upstream's v18 role-template helper, renumbered to v30 on merge.
+    # Kept next to the other column/table helpers (its upstream position) so the
+    # tenancy block below stays the last thing to touch rebuilt tables.
     _ensure_user_role_schema(db)
     _ensure_bridge_connections_schema(db)
+    # Runs last on purpose: ``_ensure_published_experts_schema`` can still
+    # rebuild ``published_experts`` from scratch (no ``org_id`` column), so the
+    # tenancy columns must be re-applied after every other helper.
+    _ensure_multi_tenant_schema(db)
+    # Runs after the tenancy helper for the same reason: it (re-)adds the
+    # resource-ACL columns on tables the earlier helpers may have rebuilt.
+    _ensure_resource_acl_schema(db)
+    _ensure_audit_org_schema(db)
+    _ensure_invite_org_schema(db)

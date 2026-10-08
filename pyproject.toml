@@ -131,6 +131,7 @@ ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B011"]
 "src/octop/api/**" = ["B008"]
+"src/octop/mcp_catalog/**" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

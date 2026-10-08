@@ -17,7 +17,7 @@ from octop.api.common.sso_cookie import (
     delete_sso_state_cookie,
     set_sso_state_cookie,
 )
-from octop.api.deps import get_server, require_permission, sign_token
+from octop.api.deps import get_server, issue_access_token, require_permission
 from octop.api.routers.auth import _user_json
 from octop.infra.auth.sso.service import SsoService
 from octop.infra.errors import ErrorCode, OctopError
@@ -41,6 +41,10 @@ class OidcConfigBody(BaseModel):
     client_secret: str | None = None
     scopes: str | None = None
     dashboard_origin: str | None = None
+    # Single-logout (RP-Initiated Logout) settings — provider-agnostic.
+    # Empty string clears the value; None leaves it unchanged.
+    end_session_endpoint: str | None = None
+    post_logout_redirect_uri: str | None = None
 
 
 def _service(server: Any) -> SsoService:
@@ -52,7 +56,13 @@ def _public_base(request: Request) -> str:
 
 
 def _bad_request(exc: ValueError) -> OctopError:
-    return OctopError.localized(ErrorCode.OIDC_BAD_REQUEST, detail=str(exc))
+    # details must carry the text: to_envelope re-localizes per-request, and
+    # the i18n template leaves {detail} unformatted when no kwargs survive.
+    return OctopError.localized(
+        ErrorCode.OIDC_BAD_REQUEST,
+        detail=str(exc),
+        details={"detail": str(exc)},
+    )
 
 
 def _login_error_redirect(server: Any, public_base: str) -> str:
@@ -66,12 +76,9 @@ async def exchange_login_code_response(code: str, server: Any) -> dict[str, Any]
         user = await _service(server).exchange_login_code(code)
     except ValueError as exc:
         raise _bad_request(exc) from exc
-    secret = server.services.secret_repo.get("jwt")
     ttl = server.services.config.access_token_ttl_seconds
     return {
-        "access_token": sign_token(
-            secret, sub=user.id, uname=user.username, role=user.role, ttl_seconds=ttl
-        ),
+        "access_token": issue_access_token(server, user, ttl_seconds=ttl),
         "token_type": "Bearer",
         "expires_in": ttl,
         "user": _user_json(user, locale=user.locale),

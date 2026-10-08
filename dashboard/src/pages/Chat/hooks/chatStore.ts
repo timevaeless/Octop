@@ -26,7 +26,7 @@ import {
   type ToolCallChunk,
   type UsageChunk,
 } from "../../../utils/parseHarnessChunk";
-import { isChatStreamError } from "../../../utils/chatStreamError";
+import { isModelRetryFailureText } from "../../../utils/chatStreamError";
 import { parseToolExecutionFeedback } from "../../../utils/toolMediaBlocks";
 import { buildUserMessageContent } from "../utils/chatAttachments";
 import { sealPriorStreamingAssistants as sealPriorStreamingAssistantsMessages } from "./sealPriorStreamingAssistants";
@@ -2047,11 +2047,13 @@ function finalizeStreamingMessages(
       return m;
     // ModelRetryMiddleware may surface failures as assistant text instead of
     // type=error — promote those to an error bubble so users get guidance + retry.
+    // Prefix-match only: prose that merely mentions an error (e.g. a KB tool
+    // returning HTTP 401) must stay a normal message.
     if (
       m.role === "assistant" &&
       !m.toolData &&
       typeof m.content === "string" &&
-      isChatStreamError(m.content)
+      isModelRetryFailureText(m.content)
     ) {
       return {
         ...m,

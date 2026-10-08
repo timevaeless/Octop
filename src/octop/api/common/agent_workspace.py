@@ -13,7 +13,14 @@ def resolve_agent_workspace_dir(server: Any, agent_id: str) -> Path:
     if registry is not None and hasattr(registry, "resolve_workspace_dir"):
         return cast(Path, registry.resolve_workspace_dir(agent_id))
     paths = getattr(server, "paths", None) or server.services.paths
-    return cast(Path, paths.ensure_agent_workspace(agent_id))
+    # T2-3 pluggable hook (octop.api.common.agent_workspace_tenancy): the
+    # default-layout branch resolves the agent's org and lands the workspace
+    # under orgs/<org>/agents/<id> (legacy flat dir adopted). Deleting the
+    # module together with the two lines below restores the community flat
+    # layout verbatim.
+    from octop.api.common.agent_workspace_tenancy import scoped_workspace_dir
+
+    return scoped_workspace_dir(server, agent_id, paths)
 
 
 __all__ = ["resolve_agent_workspace_dir"]

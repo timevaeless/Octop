@@ -1,0 +1,732 @@
+/* ---- page scaffold ---------------------------------------------------- */
+
+.page {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 14px;
+}
+
+/* ---- status stat cards (also the status filter) ------------------------ */
+
+.statsRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.statCard {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px;
+  margin: 0;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 12px;
+  border: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-primary);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
+
+  &:hover {
+    border-color: color-mix(
+      in srgb,
+      var(--fn-color-brand) 34%,
+      var(--fn-border-primary)
+    );
+    background: var(--fn-bg-hover);
+  }
+}
+
+.statCardActive {
+  border-color: var(--fn-color-brand);
+  background: var(--fn-color-brand-bg);
+  box-shadow: inset 0 0 0 1px var(--fn-color-brand-border);
+
+  &:hover {
+    border-color: var(--fn-color-brand);
+    background: var(--fn-color-brand-bg);
+  }
+}
+
+/* "total tools" is a metric, not a filter — no pointer, no hover lift. */
+.statCardStatic {
+  cursor: default;
+
+  &:hover {
+    border-color: var(--fn-border-primary);
+    background: var(--fn-bg-primary);
+  }
+}
+
+.statValue {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--fn-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.statLabel {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fn-text-tertiary);
+}
+
+/* ---- toolbar ---------------------------------------------------------- */
+
+/* NOTE: `.toolbar` above is shared with ToolsDrawer — do not reuse it here. */
+.listToolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.search {
+  flex: 1 1 260px;
+  max-width: 380px;
+}
+
+.toolbarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.higressBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.higressLabel {
+  color: var(--fn-text-secondary);
+}
+
+.higressValue,
+.higressUnset {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+  padding: 0 6px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 18px;
+}
+
+.higressValue {
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+}
+
+.higressUnset {
+  background: var(--fn-bg-warning-light);
+  color: var(--fn-color-warning-text, var(--fn-color-warning));
+}
+
+/* ---- table shell ------------------------------------------------------ */
+
+.emptyWrap {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tableWrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.filterEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 40px 20px;
+  color: var(--fn-text-quaternary);
+}
+
+.filterEmptyTitle {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fn-text-secondary);
+}
+
+.filterEmptyHint {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+  margin-bottom: 4px;
+}
+
+.filterFoot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  margin-top: 4px;
+  border-top: 1px solid var(--fn-border-secondary);
+}
+
+.filterTag {
+  margin: 0 !important;
+  font-size: 12px;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+  border-color: var(--fn-border-secondary);
+}
+
+/* ---- table cells ------------------------------------------------------ */
+
+.serviceCell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.serviceName {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.serviceId {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fn-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px 0 7px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+.statusDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.tonePublished {
+  color: var(--fn-color-success);
+  background: var(--fn-bg-success-light);
+  border-color: var(--fn-color-success-border);
+}
+
+.toneDraft {
+  color: var(--fn-text-secondary);
+  background: var(--fn-bg-tertiary);
+  border-color: var(--fn-border-primary);
+}
+
+.toneDisabled {
+  color: var(--fn-color-danger);
+  background: var(--fn-bg-danger-light);
+  border-color: var(--fn-color-danger-border);
+}
+
+.toolBadge {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-secondary);
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+  transition:
+    border-color 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease;
+
+  &:hover {
+    border-color: var(--fn-color-brand);
+    background: var(--fn-color-brand-bg);
+    color: var(--fn-color-brand);
+  }
+}
+
+.toolBadgeNum {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.targetCell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.targetMain {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.targetPort {
+  color: var(--fn-text-tertiary);
+}
+
+.targetScope {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--fn-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pathCell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.pathText {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--fn-bg-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 20px;
+  color: var(--fn-text-secondary);
+}
+
+.copyBtn {
+  appearance: none;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--fn-text-tertiary);
+  cursor: pointer;
+  opacity: 0.5;
+  transition:
+    opacity 0.16s ease,
+    color 0.16s ease,
+    background 0.16s ease;
+
+  &:hover,
+  &:focus-visible {
+    opacity: 1;
+    color: var(--fn-color-brand);
+    background: var(--fn-bg-hover);
+    border-color: var(--fn-color-brand-border);
+  }
+}
+
+.pathCell:hover .copyBtn {
+  opacity: 1;
+}
+
+.roleChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Chip shows the role's display name (role_key lives in the tooltip), so it
+   uses the UI font rather than the monospace stack. */
+.roleChip {
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--fn-border-secondary);
+  background: var(--fn-bg-tertiary);
+  font-size: 11.5px;
+  line-height: 19px;
+  color: var(--fn-text-secondary);
+}
+
+.muted {
+  color: var(--fn-text-quaternary);
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* ---- publish diff (confirmation) -------------------------------------- */
+
+.diffBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.diffIntro {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--fn-text-secondary);
+}
+
+.diffServiceId {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: var(--fn-bg-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+}
+
+.diffFirstTag {
+  margin: 0 !important;
+  align-self: flex-start;
+}
+
+.diffList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.diffGroup {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-primary);
+}
+
+.diffHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.diffDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.diffDot_added {
+  background: var(--fn-color-success);
+}
+
+.diffDot_updated {
+  background: var(--fn-color-warning);
+}
+
+.diffDot_removed {
+  background: var(--fn-color-danger);
+}
+
+.diffDot_unchanged {
+  background: var(--fn-text-quaternary);
+}
+
+.diffLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.diffCount {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.diffCount_added {
+  color: var(--fn-color-success);
+  background: var(--fn-bg-success-light);
+}
+
+.diffCount_updated {
+  color: var(--fn-color-warning-text, var(--fn-color-warning));
+  background: var(--fn-bg-warning-light);
+}
+
+.diffCount_removed {
+  color: var(--fn-color-danger);
+  background: var(--fn-bg-danger-light);
+}
+
+.diffCount_unchanged {
+  color: var(--fn-text-secondary);
+  background: var(--fn-bg-tertiary);
+}
+
+.diffChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.diffChip {
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid var(--fn-border-secondary);
+  background: var(--fn-bg-tertiary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 20px;
+  color: var(--fn-text-secondary);
+  word-break: break-all;
+}
+
+.diffEmpty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 22px 20px;
+  border-radius: 10px;
+  border: 1px dashed var(--fn-border-primary);
+  background: var(--fn-bg-secondary);
+  text-align: center;
+}
+
+.diffEmptyTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.diffEmptyHint {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.diffUnchanged {
+  opacity: 0.75;
+}
+
+/* ---- publish result (receipt) ----------------------------------------- */
+
+.resultBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.resultBanner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--fn-bg-success-light);
+  color: var(--fn-color-success);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.resultBannerIcon {
+  flex-shrink: 0;
+}
+
+.resultSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.resultSectionHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.resultSectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.resultCount {
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+}
+
+.aclTable {
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--fn-bg-primary);
+}
+
+.aclRow {
+  display: grid;
+  grid-template-columns: 148px 1fr;
+  gap: 12px;
+  align-items: start;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--fn-border-secondary);
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:nth-child(even) {
+    background: color-mix(in srgb, var(--fn-bg-secondary) 55%, transparent);
+  }
+}
+
+.aclRole {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  word-break: break-all;
+}
+
+.aclTools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.resultEmpty {
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px dashed var(--fn-border-primary);
+  background: var(--fn-bg-secondary);
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+  text-align: center;
+}
+
+/* ---- shared with ToolsDrawer / ServiceFormDrawer ---------------------- */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.yamlBlock {
+  margin: 0;
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: var(--fn-bg-elevated, rgba(128, 128, 128, 0.08));
+  color: var(--fn-text-primary);
+}
+
+.paramRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+}
+
+/* 「必填」在窄行里会被压成两行 —— 锁成单行、不许收缩。
+   用自家类名而不是 :global(.ant-checkbox-wrapper)：本项目的 antd 前缀是
+   `octop-`（实测类名 `octop-checkbox-wrapper`），写 .ant-* 是死规则。 */
+.paramRequired {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.paramName {
+  flex: 0 0 160px;
+}
+
+.paramLocation {
+  flex: 0 0 110px;
+}
+
+.paramDesc {
+  flex: 1 1 auto;
+  min-width: 120px;
+}
+
+.paramRemove {
+  flex: 0 0 auto;
+}
+
+.previewJson {
+  margin: 0;
+  padding: 12px;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--fn-bg-subtle, #f5f6f8);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.previewHint {
+  color: var(--fn-text-tertiary, #8c8c8c);
+  font-size: 12px;
+}

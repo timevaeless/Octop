@@ -332,3 +332,40 @@ async def test_resolve_turn_mcp_servers_raises_when_prepare_fails() -> None:
             explicit=None,
         )
     assert ei.value.code == ErrorCode.CONNECTOR_MCP_LOAD_FAILED
+
+
+@pytest.mark.asyncio
+async def test_resolve_turn_mcp_servers_degrades_on_partial_failure() -> None:
+    """Partial MCP load failure drops the failed servers and keeps the rest."""
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=["good__1", "bad__1"])
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=["bad__1"])
+    agent_manager.default_mcp_servers = MagicMock(return_value=[])
+
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=MagicMock(),
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=None,
+        gateway=None,
+    )
+
+    result = await processor._resolve_turn_mcp_servers(
+        agent_id="a1",
+        user_id=1,
+        explicit=["good__1", "bad__1"],
+    )
+    assert result == ["good__1"]
+
+    # IM path (raise_on_failure=False) also keeps the loaded servers.
+    result_im = await processor._resolve_turn_mcp_servers(
+        agent_id="a1",
+        user_id=1,
+        explicit=["good__1", "bad__1"],
+        raise_on_failure=False,
+    )
+    assert result_im == ["good__1"]

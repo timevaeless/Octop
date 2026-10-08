@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts
+from octop.infra.db.repos._base import UNSET, DbRow, bool_int, map_rows, now_ts
+
+
+def _parse_role_list(raw: object) -> list[str]:
+    # T2 pluggable hook (octop.infra.users.resource_acl): shared ACL parser
+    # (was one of four byte-identical copies woven into the repos).
+    from octop.infra.users.resource_acl import parse_role_list
+
+    return parse_role_list(raw)
 
 
 @dataclass(frozen=True)
@@ -25,10 +33,14 @@ class ConnectorRow:
     config_json: str | None
     created_at: int
     updated_at: int
+    # Tenancy + resource ACL (016/017). ``org_id=None`` = platform-shared.
+    org_id: str | None = None
+    allowed_roles: list[str] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, r: DbRow) -> ConnectorRow:
         blob = r["credential_blob"]
+        keys = set(r.keys())
         return cls(
             id=r["id"],
             instance_id=r["instance_id"],
@@ -44,6 +56,10 @@ class ConnectorRow:
             config_json=r["config_json"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
+            org_id=(str(r["org_id"]) if r["org_id"] not in (None, "") else None)
+            if "org_id" in keys
+            else None,
+            allowed_roles=_parse_role_list(r["allowed_roles"] if "allowed_roles" in keys else None),
         )
 
     @property
@@ -90,14 +106,22 @@ class ConnectorRepo:
         mcp_server_name: str,
         config_json: str | None = None,
         shared: bool = False,
+        org_id: str | None = None,
     ) -> str:
+        """Create an instance row.
+
+        ``org_id`` stamps the creator's tenant at creation time (mirrors
+        ``published_experts`` publishing): once shared, the row is invisible
+        outside that tenant no matter what ``allowed_roles`` says. ``None``
+        means platform-shared — only an org-less admin should land here.
+        """
         ts = now_ts()
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO connectors("
                 "instance_id, user_id, kind, display_name, status, shared, mcp_server_name, "
-                "config_json, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                "config_json, org_id, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
                 (
                     instance_id,
                     user_id,
@@ -106,6 +130,7 @@ class ConnectorRepo:
                     bool_int(shared),
                     mcp_server_name,
                     config_json,
+                    org_id,
                     ts,
                     ts,
                 ),
@@ -135,7 +160,21 @@ class ConnectorRepo:
             ).fetchall()
         return map_rows(rows, ConnectorRow)
 
-    def list_visible(self, user_id: int) -> list[ConnectorRow]:
+    def list_visible(
+        self,
+        user_id: int,
+        *,
+        org_id: str | None = None,
+        role_keys: list[str] | None = None,
+    ) -> list[ConnectorRow]:
+        """Connectors the user may see.
+
+        Own instances are always visible (they hold the user's credentials).
+        Shared instances are gated by tenancy + role ACL: a shared row with
+        ``org_id`` set is invisible outside that tenant, and a non-empty
+        ``allowed_roles`` only shows to holders of those ability packages.
+        ``role_keys=None`` disables the role filter (platform-admin paths).
+        """
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM connectors "
@@ -143,13 +182,39 @@ class ConnectorRepo:
                 "ORDER BY display_name, instance_id",
                 (user_id,),
             ).fetchall()
-        return map_rows(rows, ConnectorRow)
+        mapped = map_rows(rows, ConnectorRow)
+        # T2 pluggable hook (octop.infra.users.resource_acl): tenancy + ACL
+        # gate for shared rows. Lazy import; deleting the module restores
+        # community behaviour verbatim.
+        from octop.infra.users.resource_acl import visible_shared_row
+
+        out: list[ConnectorRow] = []
+        for row in mapped:
+            if row.user_id == user_id:
+                out.append(row)
+                continue
+            if visible_shared_row(
+                row.org_id, row.allowed_roles, viewer_org_id=org_id, role_keys=role_keys
+            ):
+                out.append(row)
+        return out
 
     def list_by_kind(self, kind: str) -> list[ConnectorRow]:
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM connectors WHERE kind = ? ORDER BY id",
                 (kind,),
+            ).fetchall()
+        return map_rows(rows, ConnectorRow)
+
+    def list_by_kind_prefix(self, prefix: str) -> list[ConnectorRow]:
+        """Rows whose kind starts with ``prefix`` (catalog attachments use
+        ``custom-mcp:{service_id}`` kinds; one prefix scan serves them all).
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM connectors WHERE kind LIKE ? ORDER BY id",
+                (prefix + "%",),
             ).fetchall()
         return map_rows(rows, ConnectorRow)
 
@@ -191,6 +256,8 @@ class ConnectorRepo:
         *,
         display_name: str | None = None,
         shared: bool | None = None,
+        org_id: str | None | object = UNSET,
+        allowed_roles: list[str] | None | object = UNSET,
     ) -> None:
         updates: list[str] = []
         params: list[object] = []
@@ -200,6 +267,13 @@ class ConnectorRepo:
         if shared is not None:
             updates.append("shared = ?")
             params.append(bool_int(shared))
+        if org_id is not UNSET:
+            updates.append("org_id = ?")
+            params.append(org_id)
+        if allowed_roles is not UNSET:
+            updates.append("allowed_roles = ?")
+            # UNSET sentinel typing leaves this as ``object`` post-narrow.
+            params.append(json.dumps(list(allowed_roles or []), ensure_ascii=False))  # type: ignore[call-overload]
         if not updates:
             return
         updates.append("updated_at = ?")

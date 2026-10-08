@@ -519,7 +519,15 @@ class OctopServer:
         )
         registry.set_proactive_scheduler(proactive_scheduler)
 
-        await registry.boot()
+        # T2-4 pluggable hook (octop.infra.users.tenancy_context): boot runs
+        # outside any request scope, and the fail-closed RLS default (no
+        # scope → no rows) would hide every agent row — the harness would
+        # mount nothing and all live-agent endpoints would 404/409. Boot is
+        # the system context, so it gets the bypass flavor.
+        from octop.infra.users.tenancy_context import scoped_request
+
+        with scoped_request(None, bypass=True):
+            await registry.boot()
         await gateway.refresh_media_backends()
 
         user_mgr = UserManager(self.services)

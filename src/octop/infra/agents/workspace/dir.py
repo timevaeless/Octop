@@ -135,10 +135,13 @@ def default_agent_workspace_dir(
     *,
     cfg: dict[str, Any] | None = None,
     ensure: bool = True,
+    org_id: str | None = None,
 ) -> Path:
     """Create-time on-disk workspace (mkdir -p unless ``ensure=False``).
 
-    Not what harness receives.
+    Not what harness receives.  Tenant-scoped since T2-3: host-rooted
+    defaults land under ``orgs/<org>/agents/<id>`` (``shared/agents/<id>``
+    for platform agents), with the legacy flat dir adopted when present.
     """
     root_raw = local_backend_root_dir(cfg)
     if root_raw is not None and not _is_host_root_sentinel(root_raw):
@@ -146,15 +149,15 @@ def default_agent_workspace_dir(
             root = Path(root_raw).expanduser().resolve()
         except OSError:
             if ensure:
-                return paths.ensure_agent_workspace(agent_id)
-            return paths.agent_workspace(agent_id)
+                return paths.ensure_agent_workspace(agent_id, org_id=org_id)
+            return paths.agent_workspace(agent_id, org_id=org_id)
         out = root / DEFAULT_SYSTEM_FILES_PATH / SCOPED_WORKSPACE_DIRNAME / agent_id
         if ensure and not _ensure_dir(out):
             return paths.ensure_agent_workspace(agent_id)
         return out
     if ensure:
-        return paths.ensure_agent_workspace(agent_id)
-    return paths.agent_workspace(agent_id)
+        return paths.ensure_agent_workspace(agent_id, org_id=org_id)
+    return paths.agent_workspace(agent_id, org_id=org_id)
 
 
 def seed_workspace_dir_on_create(
@@ -162,6 +165,7 @@ def seed_workspace_dir_on_create(
     *,
     paths: PathLayout,
     agent_id: str,
+    org_id: str | None = None,
 ) -> Path:
     """Ensure ``config["workspace_dir"]`` at create; return on-disk Path for seeding."""
     raw = config.get("workspace_dir")
@@ -172,7 +176,7 @@ def seed_workspace_dir_on_create(
         config["workspace_dir"] = text
         return host.resolve()
 
-    host = default_agent_workspace_dir(paths, agent_id, cfg=config).resolve()
+    host = default_agent_workspace_dir(paths, agent_id, cfg=config, org_id=org_id).resolve()
     if uses_scoped_workspace_default(config):
         config["workspace_dir"] = scoped_workspace_dir_str(agent_id)
     else:
@@ -343,6 +347,7 @@ def workspace_dir_from_config(
     paths: PathLayout,
     agent_id: str,
     ensure: bool = True,
+    org_id: str | None = None,
 ) -> Path:
     """On-disk workspace for Octop host ops (may map ``/.octop/…`` under root_dir).
 
@@ -355,7 +360,7 @@ def workspace_dir_from_config(
         if ensure and not _ensure_dir(out):
             return paths.ensure_agent_workspace(agent_id)
         return out
-    return default_agent_workspace_dir(paths, agent_id, cfg=cfg, ensure=ensure)
+    return default_agent_workspace_dir(paths, agent_id, cfg=cfg, ensure=ensure, org_id=org_id)
 
 
 def system_files_path_from_config(cfg: dict[str, Any] | None) -> str:
@@ -402,13 +407,16 @@ def workspace_dir_from_config_json(
     paths: PathLayout,
     agent_id: str,
     ensure: bool = True,
+    org_id: str | None = None,
 ) -> Path:
     try:
         parsed = json.loads(config_json or "{}")
     except (json.JSONDecodeError, TypeError):
         parsed = {}
     cfg = parsed if isinstance(parsed, dict) else {}
-    return workspace_dir_from_config(cfg, paths=paths, agent_id=agent_id, ensure=ensure)
+    return workspace_dir_from_config(
+        cfg, paths=paths, agent_id=agent_id, ensure=ensure, org_id=org_id
+    )
 
 
 __all__ = [

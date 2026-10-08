@@ -1,0 +1,340 @@
+/* ===================================================================
+   Octop overlay & shared-component polish — unified radius, shadow,
+   border, spacing and motion for floating layers (Modal, Drawer,
+   Popover, Dropdown, Tooltip, Message, Notification) plus button and
+   input refinements. All colors come from theme-vars.css tokens so
+   every brand palette (xhs/rose/tech/… × light/dark) is covered.
+   Selectors use the ConfigProvider prefixCls "octop"; specificity is
+   kept above antd's single-class rules so these always win.
+   =================================================================== */
+
+/* ---------------- Modal / Dialog ----------------
+   --fn-shadow-xl already carries the neutral hairline ring; the
+   brand-tinted ring was dropped: premium minimal uses color sparingly. */
+.octop-modal .octop-modal-content {
+  border-radius: 16px;
+  border: 1px solid var(--fn-border-primary);
+  box-shadow: var(--fn-shadow-xl);
+  transition:
+    box-shadow var(--fn-transition-slow),
+    border-color var(--fn-transition-slow);
+}
+
+.octop-modal .octop-modal-header {
+  border-bottom: 1px solid var(--fn-border-secondary);
+  margin-bottom: 0;
+}
+
+.octop-modal .octop-modal-title {
+  font-family: var(--fn-font-family-heading);
+  font-weight: var(--fn-font-weight-heading);
+  letter-spacing: var(--fn-letter-spacing-heading);
+  line-height: var(--fn-line-height-tight);
+}
+
+.octop-modal .octop-modal-footer {
+  border-top: 1px solid var(--fn-border-secondary);
+  margin-top: 0;
+}
+
+/* Soft blur + slight saturation boost behind modal/drawer masks for depth */
+.octop-modal-mask,
+.octop-drawer-mask {
+  backdrop-filter: blur(4px) saturate(1.1);
+  -webkit-backdrop-filter: blur(4px) saturate(1.1);
+}
+
+/* ---------------- Drawer ----------------
+   Floating-card style: the edge facing the viewport is fully rounded,
+   with a hairline ring and deep shadow so the panel reads as a soft,
+   raised surface instead of a flat sheet.
+   Radius is applied to BOTH the content-wrapper and the inner content:
+   the wrapper has no overflow clipping for its child background, so a
+   square-cornered .octop-drawer-content would otherwise overpaint the
+   rounded corners. Compound selectors (0,3,0) outrank antd's placement
+   rules (0,2,0) regardless of cssinjs injection order. */
+.octop-drawer .octop-drawer-content-wrapper {
+  overflow: hidden;
+  box-shadow: var(--fn-shadow-xl);
+}
+
+.octop-drawer.octop-drawer-right > .octop-drawer-content-wrapper,
+.octop-drawer.octop-drawer-right .octop-drawer-content {
+  border-radius: 20px 0 0 20px;
+}
+
+.octop-drawer.octop-drawer-left > .octop-drawer-content-wrapper,
+.octop-drawer.octop-drawer-left .octop-drawer-content {
+  border-radius: 0 20px 20px 0;
+}
+
+.octop-drawer.octop-drawer-top > .octop-drawer-content-wrapper,
+.octop-drawer.octop-drawer-top .octop-drawer-content {
+  border-radius: 0 0 20px 20px;
+}
+
+.octop-drawer.octop-drawer-bottom > .octop-drawer-content-wrapper,
+.octop-drawer.octop-drawer-bottom .octop-drawer-content {
+  border-radius: 20px 20px 0 0;
+}
+
+/* Clip header/footer backgrounds inside the rounded corners;
+   ring/shadow lives on the wrapper only — content just clips */
+.octop-drawer .octop-drawer-content {
+  overflow: hidden;
+}
+
+.octop-drawer .octop-drawer-header {
+  border-bottom: 1px solid var(--fn-border-secondary);
+}
+
+.octop-drawer .octop-drawer-title {
+  font-family: var(--fn-font-family-heading);
+  font-weight: var(--fn-font-weight-heading);
+  letter-spacing: var(--fn-letter-spacing-heading);
+  line-height: var(--fn-line-height-tight);
+}
+
+/* ---------------- Popover ---------------- */
+.octop-popover .octop-popover-inner {
+  border-radius: 12px;
+  border: 1px solid var(--fn-border-secondary);
+  box-shadow: var(--fn-shadow-lg);
+  padding: 6px;
+}
+
+/* ---------------- Dropdown menu ---------------- */
+.octop-dropdown .octop-dropdown-menu {
+  border-radius: 12px;
+  border: 1px solid var(--fn-border-secondary);
+  box-shadow: var(--fn-shadow-lg);
+}
+
+/* ---------------- Message / Notification ---------------- */
+.octop-message .octop-message-notice-content {
+  border-radius: 12px;
+  border: 1px solid var(--fn-border-secondary);
+  box-shadow: var(--fn-shadow-lg);
+}
+
+.octop-notification .octop-notification-notice {
+  border-radius: 12px;
+  border: 1px solid var(--fn-border-secondary);
+  box-shadow: var(--fn-shadow-lg);
+}
+
+/* ---------------- Buttons ---------------- */
+.octop-btn {
+  font-weight: var(--fn-font-weight-medium);
+  letter-spacing: var(--fn-letter-spacing-body);
+  transition:
+    color var(--fn-transition),
+    background-color var(--fn-transition),
+    border-color var(--fn-transition),
+    box-shadow var(--fn-transition),
+    transform var(--fn-transition-fast);
+}
+
+.octop-btn.octop-btn-primary {
+  /* Inner top highlight + faint vertical sheen: adds depth to the flat
+     brand fill without changing the color itself (Vercel/Linear-style). */
+  background-image: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0) 55%
+  );
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    var(--fn-shadow-brand);
+}
+
+.octop-btn.octop-btn-primary:not(.octop-btn-disabled):hover {
+  box-shadow: var(--fn-shadow-brand-lg);
+  transform: translateY(-1px);
+}
+
+.octop-btn.octop-btn-primary:not(.octop-btn-disabled):active {
+  box-shadow: var(--fn-shadow-brand);
+  transform: translateY(0);
+}
+
+/* ---------------- Inputs / Selects: brand focus ring ---------------- */
+.octop-input.octop-input-focus,
+.octop-input:focus,
+.octop-input-affix-wrapper-focused,
+.octop-input-affix-wrapper:focus {
+  box-shadow: 0 0 0 3px var(--fn-color-brand-glow);
+}
+
+.octop-select.octop-select-focus .octop-select-selector {
+  box-shadow: 0 0 0 3px var(--fn-color-brand-glow);
+}
+
+/* ---------------- Cards ---------------- */
+.octop-card {
+  border-radius: var(--fn-radius-lg);
+  transition:
+    box-shadow var(--fn-transition),
+    border-color var(--fn-transition);
+}
+
+/* Interactive cards lift subtly on hover (only where antd enables it) */
+.octop-card.octop-card-hoverable {
+  cursor: default;
+}
+
+.octop-card.octop-card-hoverable:hover {
+  border-color: var(--fn-border-primary);
+  box-shadow: var(--fn-shadow-md);
+}
+
+/* ---------------- Tables ---------------- */
+.octop-table .octop-table-thead > tr > th {
+  font-weight: var(--fn-font-weight-medium);
+  color: var(--fn-text-secondary);
+}
+
+.octop-table .octop-table-tbody > tr > td {
+  transition: background-color var(--fn-transition-fast);
+}
+
+/* ---------------- Tabs ---------------- */
+.octop-tabs .octop-tabs-ink-bar {
+  border-radius: 2px;
+}
+
+.octop-tabs .octop-tabs-tab {
+  transition:
+    color var(--fn-transition),
+    padding var(--fn-transition);
+}
+
+.octop-tabs.octop-tabs-top > .octop-tabs-nav::before {
+  border-bottom-color: var(--fn-border-secondary);
+}
+
+/* ---------------- Segmented ---------------- */
+.octop-segmented {
+  border-radius: 10px;
+  padding: 3px;
+}
+
+.octop-segmented .octop-segmented-item {
+  border-radius: 8px;
+}
+
+.octop-segmented .octop-segmented-thumb {
+  border-radius: 8px;
+  box-shadow: var(--fn-shadow-sm);
+}
+
+/* ---------------- Tooltip ---------------- */
+.octop-tooltip .octop-tooltip-inner {
+  border-radius: 10px;
+  font-weight: var(--fn-font-weight-medium);
+}
+
+/* ---------------- Keyboard focus ring (a11y) ---------------- */
+.octop-btn:focus-visible,
+.octop-tabs-tab:focus-visible,
+.octop-segmented-item:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--fn-color-brand);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ---------------- Dropdown / Popover menu items ----------------
+   Rounded items inside padded containers (Geist-style menus);
+   overflow clip keeps hover fills inside the rounded shell. */
+.octop-dropdown .octop-dropdown-menu {
+  overflow: hidden;
+  padding: 5px;
+}
+
+.octop-dropdown .octop-dropdown-menu-item {
+  border-radius: 8px;
+  transition:
+    background-color var(--fn-transition-fast),
+    color var(--fn-transition-fast);
+}
+
+.octop-dropdown .octop-dropdown-menu-item.octop-dropdown-menu-item-danger {
+  color: var(--fn-color-danger);
+}
+
+.octop-popover .octop-popover-inner-content {
+  font-size: inherit;
+}
+
+/* ---------------- Inputs: quiet default, confident focus ----------------
+   Uniform border/shadow transition so hover→focus never snaps. */
+.octop-input,
+.octop-input-affix-wrapper,
+.octop-select .octop-select-selector,
+.octop-input-number .octop-input-number-input-wrap input,
+textarea.octop-input {
+  transition:
+    border-color var(--fn-transition),
+    box-shadow var(--fn-transition),
+    background-color var(--fn-transition);
+}
+
+.octop-input:hover:not(.octop-input-focus),
+.octop-input-affix-wrapper:hover:not(.octop-input-affix-wrapper-focused),
+.octop-select:hover:not(.octop-select-focus) .octop-select-selector {
+  border-color: var(--fn-border-input);
+}
+
+/* ---------------- Tags ---------------- */
+.octop-tag {
+  border-radius: 6px;
+  font-weight: var(--fn-font-weight-medium);
+  transition:
+    background-color var(--fn-transition-fast),
+    border-color var(--fn-transition-fast),
+    color var(--fn-transition-fast);
+}
+
+/* ---------------- Pagination ---------------- */
+.octop-pagination .octop-pagination-item {
+  border-radius: 8px;
+  transition:
+    background-color var(--fn-transition-fast),
+    border-color var(--fn-transition-fast),
+    color var(--fn-transition-fast);
+}
+
+/* ---------------- Switch / Checkbox / Radio ---------------- */
+.octop-switch {
+  transition: background-color var(--fn-transition);
+}
+
+.octop-switch .octop-switch-handle {
+  transition:
+    left var(--fn-transition),
+    inset-inline-start var(--fn-transition),
+    width var(--fn-transition);
+}
+
+.octop-checkbox .octop-checkbox-inner,
+.octop-radio .octop-radio-inner {
+  transition:
+    background-color var(--fn-transition),
+    border-color var(--fn-transition);
+}
+
+/* ---------------- Menu (vertical nav) ---------------- */
+.octop-menu .octop-menu-item,
+.octop-menu .octop-menu-submenu-title {
+  border-radius: 8px;
+  transition:
+    background-color var(--fn-transition-fast),
+    color var(--fn-transition-fast),
+    border-color var(--fn-transition-fast);
+}
+
+/* ---------------- Empty states ---------------- */
+.octop-empty .octop-empty-description {
+  color: var(--fn-text-tertiary);
+}

@@ -921,6 +921,52 @@ async def test_delete_thread_checkpoint_delegates_to_harness_adelete_thread(
     agent.adelete_thread.assert_awaited_once_with("thr_1")
 
 
+class _LazySqliteSaverStub:
+    """AsyncSqliteSaver shape: async ``setup`` + ``conn``; setup opens connection."""
+
+    def __init__(self) -> None:
+        self.conn: Any = object()
+        self.setup_calls = 0
+
+    async def setup(self) -> None:
+        self.setup_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_delete_thread_checkpoint_primes_lazy_checkpointer_first(
+    manager: AgentManager,
+) -> None:
+    """2026-09-28 fix: adelete_thread on a restarted agent hits the lazily
+    unopened default sqlite checkpointer (ValueError: no active connection).
+    The warm-up hook must run setup() before delegating to harness adelete."""
+    # The warm-up is a declared ``before`` patch (octop/ext/agent_patches.py),
+    # installed by app boot; unit tests bypass app, so install explicitly.
+    from octop.ext.patches import install_all
+
+    install_all()
+
+    calls: list[str] = []
+    saver = _LazySqliteSaverStub()
+
+    async def _spy_adelete(thread_id: str) -> bool:
+        calls.append(f"adelete:{thread_id}:setup_calls={saver.setup_calls}")
+        return True
+
+    agent = MagicMock()
+    agent.checkpointer = saver
+    agent.adelete_thread = _spy_adelete
+    harness_manager = MagicMock()
+    harness_manager.get_agent.return_value = MagicMock(agent=agent)
+    manager._harness_manager = harness_manager
+
+    result = await manager.delete_thread_checkpoint("AGT1", "thr_1")
+
+    assert result is True
+    # setup() ran (connection opened) *before* adelete_thread was invoked.
+    assert calls == ["adelete:thr_1:setup_calls=1"]
+    assert saver.setup_calls == 1
+
+
 @pytest.mark.asyncio
 async def test_delete_thread_checkpoint_returns_false_when_harness_lacks_adelete_thread(
     manager: AgentManager,

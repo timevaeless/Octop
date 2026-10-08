@@ -33,31 +33,47 @@ def _get_index_semaphore() -> asyncio.Semaphore:
 
 def process_document(services: Any, kb_id: str, doc_id: str) -> None:
     """Synchronously parse, embed, and atomically replace one document's chunks."""
+    from octop.infra.users.tenancy_context import bind_tenant_scope, reset_tenant_scope
+
     repo = services.knowledge_repo
     assert_knowledge_usable(services.settings_repo.get, getattr(services, "provider_repo", None))
     document = repo.get_document(doc_id)
-    base = repo.get_base(kb_id)
+    # This runs on an executor thread (run_in_executor does NOT copy
+    # contextvars), so no tenant scope is bound here. Under PostgreSQL RLS an
+    # unbound scope sees only platform-shared knowledge_bases rows — resolve
+    # the KB's tenant through an explicit bypass window, then bind that tenant
+    # for the rest of the job (get_base/update_base hit the RLS'd table).
+    bypass_token = bind_tenant_scope(None, bypass=True)
+    try:
+        base = repo.get_base(kb_id)
+    finally:
+        reset_tenant_scope(bypass_token)
     if document is None or document.kb_id != kb_id or base is None:
         raise LookupError("knowledge document or base not found")
-    if document.is_dir:
-        return
-    repo.update_document(doc_id, status="processing", error_message="")
+    org_token = bind_tenant_scope(base.org_id) if base.org_id else None
     try:
-        path = document_path(kb_id, doc_id, document.filename)
-        text = parse_document(path, ocr=optional_ocr_extractor(services))
-        knobs = get_advanced_settings(services.settings_repo.get)
-        chunks = chunk_text(text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"])
-        if not (text or "").strip() or not chunks:
-            raise ValueError("knowledge document has no extractable text")
-        embeddings = embed_knowledge_texts(services, chunks)
-        KnowledgeIndex(kb_id).replace_doc_chunks(doc_id, chunks, embeddings)
-        dimension = len(embeddings[0]) if embeddings else 0
-        repo.update_document(doc_id, status="ready", error_message="", chunk_count=len(chunks))
-        if dimension and base.embedding_dim != dimension:
-            repo.update_base(kb_id, embedding_dim=dimension)
-    except Exception as exc:
-        repo.update_document(doc_id, status="failed", error_message=str(exc), chunk_count=0)
-        raise
+        if document.is_dir:
+            return
+        repo.update_document(doc_id, status="processing", error_message="")
+        try:
+            path = document_path(kb_id, doc_id, document.filename, org_id=base.org_id)
+            text = parse_document(path, ocr=optional_ocr_extractor(services))
+            knobs = get_advanced_settings(services.settings_repo.get)
+            chunks = chunk_text(text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"])
+            if not (text or "").strip() or not chunks:
+                raise ValueError("knowledge document has no extractable text")
+            embeddings = embed_knowledge_texts(services, chunks)
+            KnowledgeIndex(kb_id).replace_doc_chunks(doc_id, chunks, embeddings)
+            dimension = len(embeddings[0]) if embeddings else 0
+            repo.update_document(doc_id, status="ready", error_message="", chunk_count=len(chunks))
+            if dimension and base.embedding_dim != dimension:
+                repo.update_base(kb_id, embedding_dim=dimension)
+        except Exception as exc:
+            repo.update_document(doc_id, status="failed", error_message=str(exc), chunk_count=0)
+            raise
+    finally:
+        if org_token is not None:
+            reset_tenant_scope(org_token)
 
 
 def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Task[None]:

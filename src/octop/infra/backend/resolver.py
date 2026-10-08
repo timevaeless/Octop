@@ -9,6 +9,24 @@ from typing import Any
 from octop.infra.backend.adapter import row_to_backend_spec
 
 
+_DEFAULT_BACKEND_STRINGS = frozenset({"", "default"})
+
+
+def normalize_backend_config(spec: Any) -> Any:
+    """Map bare ``"default"`` / empty-string backend configs to ``None``.
+
+    Some clients persist ``{"backend": "default"}`` meaning "use the default
+    backend". harness only accepts known type strings and raises
+    ``Unknown backend type 'default'`` at agent startup, so normalize here:
+    ``None`` lets the caller fall back to ``default_agent_backend_spec``.
+    Unknown non-empty strings are left untouched — harness rejects them with
+    a precise error, which is the right outcome for a genuinely bad spec.
+    """
+    if isinstance(spec, str) and spec.strip().lower() in _DEFAULT_BACKEND_STRINGS:
+        return None
+    return spec
+
+
 def default_agent_backend_spec(workspace_dir: Path) -> dict[str, Any]:
     """Harness backend for agents with no explicit ``backend`` in config.
 

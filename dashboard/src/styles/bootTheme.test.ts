@@ -34,6 +34,7 @@ describe("index.html boot theme", () => {
   beforeEach(() => {
     localStorage.removeItem(THEME_STORAGE_KEY);
     document.documentElement.removeAttribute("data-theme");
+    document.documentElement.removeAttribute("data-palette");
     stubMatchMedia(true);
   });
 
@@ -41,6 +42,7 @@ describe("index.html boot theme", () => {
     window.matchMedia = originalMatchMedia;
     localStorage.removeItem(THEME_STORAGE_KEY);
     document.documentElement.removeAttribute("data-theme");
+    document.documentElement.removeAttribute("data-palette");
   });
 
   it("styles the splash from data-theme, not OS color scheme", () => {
@@ -90,5 +92,28 @@ describe("index.html boot theme", () => {
     localStorage.setItem(THEME_STORAGE_KEY, "light");
     eval(bootThemeScript());
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("defaults the boot palette to xhs", () => {
+    eval(bootThemeScript());
+    expect(document.documentElement.getAttribute("data-palette")).toBe("xhs");
+  });
+
+  it("honors a stored palette for first paint", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ preference: "light", palette: "teal" }),
+    );
+    eval(bootThemeScript());
+    expect(document.documentElement.getAttribute("data-palette")).toBe("teal");
+  });
+
+  it("ignores unknown stored palette values", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ preference: "light", palette: "neon-pink" }),
+    );
+    eval(bootThemeScript());
+    expect(document.documentElement.getAttribute("data-palette")).toBe("xhs");
   });
 });

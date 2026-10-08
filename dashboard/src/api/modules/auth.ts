@@ -61,6 +61,10 @@ export interface OctopUser {
   /** Linked SSO providers (multi-identity). */
   sso_identities?: SsoIdentity[];
   has_password?: boolean;
+  /** Active business tenant (mirrors the token's ``oid`` claim). */
+  org_id?: string | null;
+  /** Ability-package keys (mirrors the token's ``rls`` claim). */
+  role_keys?: string[];
   /** Preset character id. Empty means the built-in default portrait. */
   avatar_icon?: string | null;
   /** Uploaded portrait. Shown ahead of the preset when present. */
@@ -250,9 +254,21 @@ export const authApi = {
     return { ...raw, token: raw.access_token };
   },
 
-  /** Server-side logout (best-effort; client clears token regardless). */
-  logout: () =>
-    request<void>("/auth/logout", { method: "POST" }).catch(() => undefined),
+  /**
+   * Server-side logout (best-effort; client clears token regardless).
+   * When the user signed in via SSO and the provider supports
+   * RP-Initiated Logout, the response carries the IdP logout URL —
+   * navigate to it (full page redirect) to end the IdP session too.
+   */
+  logout: async (): Promise<{ redirect_url?: string } | undefined> => {
+    try {
+      return await request<{ redirect_url?: string }>("/auth/logout", {
+        method: "POST",
+      });
+    } catch {
+      return undefined;
+    }
+  },
 
   /** Get the current authenticated user. */
   me: () => request<OctopUser>("/auth/me"),

@@ -54,7 +54,7 @@ def _make_manager(*, existing_agent_ids: set[str]):
     class WorkspaceReached(RuntimeError):
         pass
 
-    def ensure_workspace(agent_id: str):
+    def ensure_workspace(agent_id: str, org_id: str | None = None):
         raise WorkspaceReached(agent_id)
 
     mgr = object.__new__(manager_mod.AgentManager)

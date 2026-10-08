@@ -209,7 +209,7 @@ async def test_list_threads_derives_has_messages_from_db() -> None:
     thread_registry.get_bound_thread_id.return_value = None
 
     server = MagicMock()
-    agent_row = MagicMock(user_id=1)
+    agent_row = MagicMock(user_id=1, is_shared=0, allowed_roles=[])
     server.app_runtime.agent_registry.get_row.return_value = agent_row
     server.app_runtime.agent_registry.get_agent.side_effect = AssertionError(
         "list_threads must not touch harness"
@@ -228,7 +228,7 @@ async def test_list_threads_derives_has_messages_from_db() -> None:
 @pytest.mark.asyncio
 async def test_get_thread_history_returns_has_more(monkeypatch: pytest.MonkeyPatch) -> None:
     server = MagicMock()
-    row = MagicMock(agent_id="agt_1", user_id=1, artifacts=())
+    row = MagicMock(agent_id="agt_1", user_id=1, artifacts=(), is_shared=0, allowed_roles=[])
     server.app_runtime.gateway.thread_registry.get_thread.return_value = row
 
     server.services.thread_message_repo.projection_status.return_value = "ready"
@@ -258,7 +258,7 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = MagicMock()
-    row = MagicMock(agent_id="agt_1", user_id=1, artifacts=())
+    row = MagicMock(agent_id="agt_1", user_id=1, artifacts=(), is_shared=0, allowed_roles=[])
     server.app_runtime.gateway.thread_registry.get_thread.return_value = row
     server.services.thread_message_repo.projection_status.return_value = "pending"
     server.app_runtime.gateway.history_backfill.enqueue.return_value = True
@@ -282,6 +282,14 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
 @pytest.mark.asyncio
 async def test_history_migration_status_is_scoped_to_effective_user() -> None:
     server = MagicMock()
+    # 2026-09-27: the row carries org_id='cheryfs' and the viewer matches it,
+    # so the shared-agent tenancy gate in require_agent_row stays out of the way.
+    server.services.user_repo.get.return_value = SimpleNamespace(default_org_id=None)
+    # Explicit row fake: a bare MagicMock auto-generates truthy is_shared /
+    # allowed_roles and would trip the shared-agent tenancy gate.
+    server.app_runtime.agent_registry.get_row.return_value = MagicMock(
+        agent_id="agt_1", user_id=None, is_shared=1, allowed_roles=[], org_id="cheryfs"
+    )
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=2, queued=1, running=1, failed=3
     )
@@ -289,7 +297,7 @@ async def test_history_migration_status_is_scoped_to_effective_user() -> None:
     queue = server.app_runtime.gateway.history_backfill
     queue.contains.return_value = True
     queue.available_slots = 10
-    user = MagicMock(id=7, is_admin=False)
+    user = MagicMock(id=7, is_admin=False, org_id="cheryfs", role_keys=[])
 
     out = await history_mod.get_history_migration_status(
         "agt_1",
@@ -316,6 +324,12 @@ async def test_history_migration_status_is_scoped_to_effective_user() -> None:
 @pytest.mark.asyncio
 async def test_start_history_migration_queues_bounded_candidates() -> None:
     server = MagicMock()
+    server.services.user_repo.get.return_value = SimpleNamespace(default_org_id=None)
+    # Explicit row fake: a bare MagicMock auto-generates truthy is_shared /
+    # allowed_roles and would trip the shared-agent tenancy gate.
+    server.app_runtime.agent_registry.get_row.return_value = MagicMock(
+        agent_id="agt_1", user_id=None, is_shared=1, allowed_roles=[], org_id="cheryfs"
+    )
     queue = server.app_runtime.gateway.history_backfill
     queue.available_slots = 2
     queue.active_jobs = 0
@@ -328,7 +342,7 @@ async def test_start_history_migration_queues_bounded_candidates() -> None:
     repo.migration_summary.return_value = ThreadProjectionSummary(queued=2)
     repo.migration_active_thread_ids.return_value = ["thr_a", "thr_b"]
     queue.contains.side_effect = [False, False, True, True]
-    user = MagicMock(id=7, is_admin=False)
+    user = MagicMock(id=7, is_admin=False, org_id="cheryfs", role_keys=[])
 
     out = await history_mod.start_history_migration(
         "agt_1",
@@ -349,6 +363,12 @@ async def test_start_history_migration_queues_bounded_candidates() -> None:
 @pytest.mark.asyncio
 async def test_history_migration_waits_while_agent_is_active() -> None:
     server = MagicMock()
+    server.services.user_repo.get.return_value = SimpleNamespace(default_org_id=None)
+    # Explicit row fake: a bare MagicMock auto-generates truthy is_shared /
+    # allowed_roles and would trip the shared-agent tenancy gate.
+    server.app_runtime.agent_registry.get_row.return_value = MagicMock(
+        agent_id="agt_1", user_id=None, is_shared=1, allowed_roles=[], org_id="cheryfs"
+    )
     server.app_runtime.agent_registry.is_agent_active.return_value = True
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=1
@@ -356,10 +376,10 @@ async def test_history_migration_waits_while_agent_is_active() -> None:
     server.services.thread_message_repo.migration_active_thread_ids.return_value = []
     server.app_runtime.gateway.history_backfill.available_slots = 10
     server.app_runtime.gateway.history_backfill.contains.return_value = False
-    row = MagicMock(agent_id="agt_1", user_id=7, artifacts=())
+    row = MagicMock(agent_id="agt_1", user_id=7, artifacts=(), is_shared=0, allowed_roles=[])
     server.app_runtime.gateway.thread_registry.get_thread.return_value = row
     server.services.thread_message_repo.projection_status.return_value = "pending"
-    user = MagicMock(id=7, is_admin=False)
+    user = MagicMock(id=7, is_admin=False, org_id="cheryfs", role_keys=[])
 
     status = await history_mod.get_history_migration_status(
         "agt_1",

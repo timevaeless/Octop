@@ -63,7 +63,14 @@ class PublishedExpertInstallOptions:
 
 
 def _snapshot_dir(services: Any, expert_id: str) -> Path:
-    return Path(services.paths.published_experts_dir) / expert_id
+    """Tenant-scoped snapshot dir (T2-3): orgs/<org>/ or shared/ for platform rows."""
+    org_id = None
+    try:
+        row = services.published_expert_repo.get(expert_id)
+        org_id = getattr(row, "org_id", None) if row is not None else None
+    except Exception:  # pragma: no cover - defensive: layout must not 500
+        org_id = None
+    return Path(services.paths.published_expert_snapshot_dir(expert_id, org_id=org_id))
 
 
 def _read_snapshot_manifest(snapshot_dir: Path) -> dict[str, Any]:
@@ -127,6 +134,41 @@ def _agent_color(registry: Any, agent_id: str) -> str | None:
     return str(color).strip() if isinstance(color, str) and color.strip() else None
 
 
+def _agent_session_defaults(registry: Any, agent_id: str) -> tuple[list[str], list[str], list[str]]:
+    """The source agent's composer defaults: (kb_ids, mcp_servers, skill_package_ids).
+
+    Read off the agent row's profile columns (JSON id-list strings, same shape
+    ``dump_id_list`` writes). Malformed values degrade to empty lists so a
+    publish never fails over stamping metadata.
+    """
+    import json as _json
+
+    row = registry.get_row(agent_id)
+    if row is None:
+        return [], [], []
+
+    def _parse(column: str) -> list[str]:
+        raw = getattr(row, column, None)
+        if raw is None or raw == "":
+            return []
+        if isinstance(raw, list):
+            return [str(item) for item in raw if item is not None]
+        if isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+            except (TypeError, ValueError):
+                return []
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item is not None]
+        return []
+
+    return (
+        _parse("knowledge_base_ids"),
+        _parse("mcp_servers"),
+        _parse("skill_package_ids"),
+    )
+
+
 def _snapshot_meta(
     source: Any,
     *,
@@ -184,8 +226,16 @@ async def publish_agent_expert(
     welcome_message_en: str = "",
     quick_prompts: tuple[dict[str, Any], ...] = (),
     task_examples: dict[str, list[str]] | None = None,
+    org_id: str | None = None,
+    allowed_roles: list[str] | None = None,
 ) -> PublishedExpertRow:
-    """Snapshot an owned agent workspace into a globally installable expert template."""
+    """Snapshot an owned agent workspace into an installable expert template.
+
+    Tenancy: a tenant user's template is scoped to their org (``org_id``);
+    only a platform admin without an org context publishes platform-wide
+    (``org_id=None``) rows. ``allowed_roles`` optionally restricts visibility
+    to holders of those ability packages.
+    """
     repo = services.published_expert_repo
     existing = repo.get_by_source_agent_id(source.agent_id)
     if existing is not None:
@@ -197,7 +247,12 @@ async def publish_agent_expert(
 
     resolved_slug = resolve_published_expert_slug(repo=repo, name=name, slug=slug)
     expert_id = new_ulid()
-    snapshot_dir = _snapshot_dir(services, expert_id)
+    # Resolve the snapshot dir from the KNOWN org stamp, not from the repo:
+    # at publish time the row does not exist yet, so the repo-based lookup in
+    # _snapshot_dir would return None and drop a tenant template's snapshot
+    # into the shared area — installs would then look under orgs/<org>/ and
+    # 404 (verified live 2026-09-29).
+    snapshot_dir = Path(services.paths.published_expert_snapshot_dir(expert_id, org_id=org_id))
     resolved_description = description or source.description or ""
     resolved_quick_prompts = quick_prompts or await _workspace_quick_prompts(workspace)
     resolved_task_examples = (
@@ -206,6 +261,9 @@ async def publish_agent_expert(
     color = _agent_color(registry, source.agent_id) or ""
     icon_name = getattr(source, "icon_name", None) or source.icon or ""
     source_icon_url = public_portrait_icon_url(getattr(source, "icon_url", None))
+    default_kb_ids, default_mcp, default_pkgs = _agent_session_defaults(
+        registry, source.agent_id
+    )
     try:
         await export_agent_workspace_to_dir(
             workspace=workspace,
@@ -234,6 +292,11 @@ async def publish_agent_expert(
                 source_agent_id=source.agent_id,
                 icon_name=icon_name,
                 color=color,
+                org_id=org_id,
+                allowed_roles=allowed_roles,
+                default_knowledge_base_ids=default_kb_ids,
+                default_mcp_servers=default_mcp,
+                default_skill_package_ids=default_pkgs,
             ),
         )
     except (SqliteIntegrityError, PsycopgIntegrityError) as exc:
@@ -310,6 +373,7 @@ async def refresh_published_expert(
         ),
         manifest_id=row.slug,
     )
+    _refresh_session_defaults(services, registry, row, source)
     return cast(
         PublishedExpertRow,
         services.published_expert_repo.update_snapshot_meta(
@@ -322,12 +386,36 @@ async def refresh_published_expert(
     )
 
 
+def _refresh_session_defaults(services: Any, registry: Any, row: Any, source: Any) -> None:
+    """Re-stamp the template's composer defaults from the source agent.
+
+    Best-effort: refresh is about the workspace snapshot, so a failure to
+    read the profile columns must not fail the whole refresh.
+    """
+    try:
+        kb_ids, mcp, pkgs = _agent_session_defaults(registry, source.agent_id)
+        services.published_expert_repo.set_session_defaults(
+            row.id,
+            knowledge_base_ids=kb_ids,
+            mcp_servers=mcp,
+            skill_package_ids=pkgs,
+        )
+    except Exception:  # pragma: no cover - defensive: metadata must not 500
+        pass
+
+
 async def unpublish_expert(*, services: Any, user: User, expert_id: str) -> None:
     """Remove a published expert's listing and snapshot without deleting installed forks."""
     row = require_published_expert(services, expert_id)
     assert_can_mutate_published(row, user)
+    # Snapshot dir BEFORE deleting the row: _snapshot_dir resolves the org
+    # scope by re-reading the row, so deleting first would miss tenant
+    # snapshots under orgs/<org>/ and leave them orphaned.
+    snapshot_dir = Path(
+        services.paths.published_expert_snapshot_dir(row.id, org_id=row.org_id)
+    )
     services.published_expert_repo.delete(row.id)
-    await asyncio.to_thread(shutil.rmtree, _snapshot_dir(services, row.id), ignore_errors=True)
+    await asyncio.to_thread(shutil.rmtree, snapshot_dir, ignore_errors=True)
 
 
 async def install_published_expert(
@@ -340,9 +428,12 @@ async def install_published_expert(
 ) -> dict[str, Any]:
     """Create a private agent and seed it from the immutable published snapshot.
 
-    Composer defaults (knowledge bases / connectors) are installer-owned: the
-    snapshot does not copy them from the publisher's source agent. The installer
-    may pass their own lists on this request.
+    Composer defaults (knowledge bases / connectors / skill packages) come
+    from the template when the installer does not pass their own lists
+    (2026-09-29): the router soft-filters the template defaults to the
+    installer's visibility before handing them over, so a default the
+    installer cannot see is dropped rather than failing the install.
+    Installer-provided lists always win and are validated fail-fast.
     """
     row = require_published_expert(services, expert_id)
     snapshot_dir = _snapshot_dir(services, row.id)
@@ -365,6 +456,9 @@ async def install_published_expert(
     apply_enable_trajectory(config_extra, options.enable_trajectory)
     if options.conversation_mode:
         config_extra["conversation_mode"] = options.conversation_mode
+
+    # 2026-09-27 attribution hook (pluggable: resource_attribution).
+    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
 
     async def seed_snapshot(created_row: Any, workspace: Any) -> None:
         await seed_expert_directory(expert_dir=snapshot_dir, workspace=workspace)
@@ -403,6 +497,9 @@ async def install_published_expert(
             mcp_servers=options.mcp_servers,
             published_expert_id=row.id,
             welcome_message=options.welcome_message,
+            # 2026-09-27 attribution rule: platform-admin installs stay
+            # unattributed (pluggable: resource_attribution).
+            org_id=_creator_org_id(user),
         ),
         defer_bootstrap=True,
         workspace_initializer=seed_snapshot,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ANTD_BRAND_TOKENS,
+  DEFAULT_PALETTE,
   VALID_PALETTES,
   brandPrimary,
 } from "./themePalettes";
@@ -25,6 +26,7 @@ function contrastRatio(foreground: string, background: string): number {
 describe("theme palettes", () => {
   it("exposes the curated palette set", () => {
     expect(VALID_PALETTES).toEqual([
+      "xhs",
       "rose",
       "tech",
       "indigo",
@@ -34,6 +36,24 @@ describe("theme palettes", () => {
       "amber",
       "slate",
     ]);
+  });
+
+  it("defaults to the Xiaohongshu-red flagship skin", () => {
+    expect(DEFAULT_PALETTE).toBe("xhs");
+  });
+
+  it("keeps xhs solid Ant Design states dark enough for white text", () => {
+    for (const mode of ["light", "dark"] as const) {
+      const tokens = ANTD_BRAND_TOKENS.xhs[mode];
+      for (const color of [
+        tokens.colorPrimary,
+        tokens.colorPrimaryHover,
+        tokens.colorPrimaryActive,
+      ]) {
+        expect(contrastRatio(color, "#FFFFFF")).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+    expect(ANTD_BRAND_TOKENS.xhs.light.colorPrimary).toBe("#E0254A");
   });
 
   it("keeps the historic Elegant Rose default brand tokens", () => {

@@ -143,6 +143,19 @@ export const knowledgeBasesApi = {
     request<KnowledgeBase[]>("/knowledge-bases", {
       headers: bridgeAgentHeaders(agentId),
     }),
+  /**
+   * Bases the expert's *owner* may attach — the same scope the save enforces.
+   * Use this for composer-default pickers; `list` is a management view and
+   * hands admins every base, including ones the owner cannot attach.
+   * Omit `agentId` for an expert about to be created (owner = caller).
+   */
+  listAssignable: (agentId?: string) =>
+    request<KnowledgeBase[]>(
+      agentId
+        ? `/knowledge-bases/assignable?agent_id=${encodeURIComponent(agentId)}`
+        : "/knowledge-bases/assignable",
+      { headers: bridgeAgentHeaders(agentId) },
+    ),
   getEmbeddingOptions: (opts?: { allOnnx?: boolean }) =>
     request<KnowledgeEmbeddingOptions>(
       opts?.allOnnx

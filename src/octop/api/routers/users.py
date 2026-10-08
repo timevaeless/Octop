@@ -489,6 +489,12 @@ async def patch_user(
         await server.user_manager.set_email(row.username, body.email)
     if body.disabled is True:
         await server.user_manager.disable(row.username)
+        # T4-3: without a bump, re-enabling the user later would resurrect
+        # pre-disable tokens (same epoch). Pluggable hook — see
+        # octop.infra.users.lifecycle.
+        from octop.infra.users.lifecycle import bump_user_epoch
+
+        bump_user_epoch(server.services, user_id, reason="user.disabled")
     elif body.disabled is False:
         await server.user_manager.enable(row.username)
     if body.permissions is not None:

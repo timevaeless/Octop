@@ -84,12 +84,13 @@ def test_host_rooted_default_uses_octop_home(tmp_path: Path) -> None:
     }
     host = seed_workspace_dir_on_create(cfg, paths=paths, agent_id="A1")
     assert cfg["workspace_dir"] == str(host)
-    assert host == (tmp_path / ".octop" / "agents" / "A1").resolve()
+    # T2-3: platform agents (org None) seed under shared/agents/<id>.
+    assert host == (tmp_path / ".octop" / "shared" / "agents" / "A1").resolve()
 
 
 @pytest.mark.parametrize("root_dir", ["C:/", "C:\\", "D:", "d:/"])
 def test_windows_drive_root_is_host_sentinel(tmp_path: Path, root_dir: str) -> None:
-    """Drive roots must use OCTOP_HOME agents/, not {drive}/.octop/workspaces/."""
+    """Drive roots must use OCTOP_HOME, not {drive}/.octop/workspaces/."""
     paths = PathLayout(tmp_path / ".octop")
     cfg = {
         "backend": {
@@ -100,7 +101,8 @@ def test_windows_drive_root_is_host_sentinel(tmp_path: Path, root_dir: str) -> N
     }
     host = seed_workspace_dir_on_create(cfg, paths=paths, agent_id="WIN1")
     assert cfg["workspace_dir"] == str(host)
-    assert host == (tmp_path / ".octop" / "agents" / "WIN1").resolve()
+    # T2-3 (fork): org-less agents seed under shared/agents/<id>, not agents/<id>.
+    assert host == (tmp_path / ".octop" / "shared" / "agents" / "WIN1").resolve()
     assert ".octop/workspaces" not in cfg["workspace_dir"].replace("\\", "/")
 
 
@@ -178,3 +180,22 @@ def test_neutralize_unwritable_local_root(tmp_path: Path) -> None:
     writable.mkdir()
     keep = neutralize_unwritable_local_root(_scoped_cfg(writable))
     assert keep["backend"]["root_dir"] == str(writable)
+def test_seed_workspace_dir_on_create_tenant_scoped(tmp_path: Path) -> None:
+    """T2-3: host-rooted create default lands in orgs/<org>/agents/<id>."""
+    paths = PathLayout(tmp_path / "octop-home")
+    config: dict[str, object] = {}
+    host = seed_workspace_dir_on_create(
+        config, paths=paths, agent_id="T2ORGA", org_id="org-a"
+    )
+    assert host == (tmp_path / "octop-home" / "orgs" / "org-a" / "agents" / "T2ORGA").resolve()
+    assert config["workspace_dir"] == str(host)
+    assert host.is_dir()
+
+
+def test_seed_workspace_dir_on_create_platform_shared(tmp_path: Path) -> None:
+    """T2-3: platform agents (org None) seed under shared/agents/<id>."""
+    paths = PathLayout(tmp_path / "octop-home")
+    config: dict[str, object] = {}
+    host = seed_workspace_dir_on_create(config, paths=paths, agent_id="T2PLAT")
+    assert host == (tmp_path / "octop-home" / "shared" / "agents" / "T2PLAT").resolve()
+    assert host.is_dir()

@@ -12,7 +12,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../api/modules/connectors", () => ({
   connectorsApi: {
-    listInstances: vi.fn().mockResolvedValue([
+    // composer reads the ASSIGNABLE listing — the same name namespace as
+    // expert.mcp_servers and turn validation (catalog rows are harness-keyed)
+    listAssignable: vi.fn().mockResolvedValue([
       {
         status: "active",
         has_credentials: true,
@@ -67,8 +69,16 @@ vi.mock("../../../hooks/useCurrentUser", () => ({
 vi.mock("../../../context/AgentContext", () => ({
   useAgent: () => ({
     agents: [
-      { agent_id: "expertA", knowledge_base_ids: ["k1"] },
-      { agent_id: "expertB", knowledge_base_ids: ["k3"] },
+      {
+        agent_id: "expertA",
+        knowledge_base_ids: ["k1"],
+        mcp_servers: ["c1"],
+      },
+      {
+        agent_id: "expertB",
+        knowledge_base_ids: ["k3"],
+        mcp_servers: ["c2"],
+      },
     ],
   }),
 }));
@@ -145,32 +155,36 @@ describe("useChatComposerResources — per-expert KB selection", () => {
     );
   });
 
-  it("connectors get the same per-expert isolation (aligned with KB fix)", async () => {
+  it("connector picker is scoped to the expert's configured set; per-expert memory still applies", async () => {
     const threadId = "thread-existing";
     const { result, rerender } = renderHook(
       ({ agentId }: { agentId: string }) =>
         useChatComposerResources(agentId, threadId),
       { initialProps: { agentId: "expertA" } },
     );
-    await waitFor(() => expect(result.current.chatConnectors.length).toBe(2));
+    // A only sees its own configured connector (c1); c2 is invisible here.
+    await waitFor(() =>
+      expect(result.current.chatConnectors.map((c) => c.mcp_server_name)).toEqual([
+        "c1",
+      ]),
+    );
+    // expert default = configured connectors
+    await waitFor(() => expect(result.current.selectedConnectors).toEqual(["c1"]));
 
-    // manual connector selection in A (saved per agent)
-    act(() => result.current.handleConnectorsChange(["c1"]));
-    expect(result.current.selectedConnectors).toEqual(["c1"]);
+    // explicit opt-out in A is remembered per expert
+    act(() => result.current.handleConnectorsChange([]));
 
-    // switch to B: A's c1 must NOT leak; B has no saved prefs / defaults
+    // switch to B: only B's own connector visible, defaults to it
     rerender({ agentId: "expertB" });
-    await waitFor(() => expect(result.current.selectedConnectors).toEqual([]));
+    await waitFor(() =>
+      expect(result.current.chatConnectors.map((c) => c.mcp_server_name)).toEqual([
+        "c2",
+      ]),
+    );
+    await waitFor(() => expect(result.current.selectedConnectors).toEqual(["c2"]));
 
-    // manual selection in B, then back to A: each expert remembers its own
-    act(() => result.current.handleConnectorsChange(["c2"]));
+    // back to A: opt-out remembered (not re-attached); B's c2 not leaked
     rerender({ agentId: "expertA" });
-    await waitFor(() =>
-      expect(result.current.selectedConnectors).toEqual(["c1"]),
-    );
-    rerender({ agentId: "expertB" });
-    await waitFor(() =>
-      expect(result.current.selectedConnectors).toEqual(["c2"]),
-    );
+    await waitFor(() => expect(result.current.selectedConnectors).toEqual([]));
   });
 });

@@ -22,6 +22,38 @@ else:
     from octop.infra.users.identity import User
 
 
+def issue_access_token(
+    server: OctopServer,
+    user: User,
+    *,
+    ttl_seconds: int | None = None,
+) -> str:
+    """T2 pluggable hook — implementation in octop.infra.users.token_tenancy.
+
+    Single token-issuing path for login / setup / invite / OIDC / sliding
+    renew; adds the tenant claims (``oid`` / ``rls`` / ``ver``) that the
+    community ``sign_token`` above does not carry.
+    """
+    from octop.infra.users.token_tenancy import issue_access_token as _impl
+
+    return _impl(server, user, ttl_seconds=ttl_seconds)
+
+
+def can_access_resource(
+    user: User,
+    *,
+    resource_org_id: str | None,
+    allowed_roles: list[str] | None,
+) -> bool:
+    """T2 pluggable hook — implementation in octop.infra.users.token_tenancy.
+
+    Server-side resource ACL decision (resource-authorization-design §3.2).
+    """
+    from octop.infra.users.token_tenancy import can_access_resource as _impl
+
+    return _impl(user, resource_org_id=resource_org_id, allowed_roles=allowed_roles)
+
+
 # Sliding renew: when remaining life is below this fraction of configured TTL,
 # middleware issues a fresh access token via ACCESS_TOKEN_RESPONSE_HEADER.
 ACCESS_TOKEN_RESPONSE_HEADER = "X-Octop-Access-Token"
@@ -112,6 +144,13 @@ def resolve_user_from_token(server: OctopServer, token: str) -> User:
     user = server.user_manager.get_by_id(int(payload["sub"]))
     if user is None:
         raise OctopError(ErrorCode.USER_DISABLED, "user not active")
+    # T2 pluggable hook (octop.infra.users.token_tenancy): the ``ver`` gate —
+    # an epoch bump invalidates every pre-change token right here. DB-
+    # authoritative since the round-10 review (2026-09-26): the manager cache
+    # is stale on some bump paths, so the gate compares against the row.
+    from octop.infra.users.token_tenancy import assert_token_epoch
+
+    assert_token_epoch(server, payload, user)
     return user
 
 
@@ -128,16 +167,10 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
     threshold = max(1, int(ttl * _SLIDING_RENEW_REMAINING_FRACTION))
     if remaining >= threshold:
         return None
-    secret = server.services.secret_repo.get("jwt")
-    if secret is None:
-        raise OctopError(ErrorCode.INTERNAL_ERROR, "jwt secret missing")
-    return sign_token(
-        secret,
-        sub=user.id,
-        uname=user.username,
-        role=user.role,
-        ttl_seconds=ttl,
-    )
+    # Re-sign through the single issuing path so the fresh token keeps the
+    # tenant/role context (``oid`` / ``rls`` / ``ver``) — losing it here would
+    # silently drop authorization on every long-lived session.
+    return issue_access_token(server, user, ttl_seconds=ttl)
 
 
 def authenticate_request(request: Request, server: OctopServer) -> User:

@@ -6,6 +6,7 @@ import re
 from typing import Any, Literal
 from urllib.parse import urlparse
 
+from octop.infra.connectors.delegation import spec_wants_delegated_identity
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.ssrf_guard import (
     UnsafeOutboundUrl,
@@ -17,7 +18,7 @@ CUSTOM_MCP_KIND = "custom-mcp"
 CUSTOM_MCP_DISPLAY_NAME = "自定义 MCP"
 
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
-_META_KEYS = frozenset({"enabled", "display_name", "default_open", "shared"})
+_META_KEYS = frozenset({"enabled", "display_name", "default_open", "shared", "delegate_identity"})
 _OAUTH_KEY = "oauth"
 _SECRET_KEYS = frozenset({_OAUTH_KEY})
 _HARNESS_STRIP_KEYS = _META_KEYS | _SECRET_KEYS
@@ -48,6 +49,26 @@ def parse_synthetic_instance_id(instance_id: str) -> str | None:
         return None
     name = instance_id.removeprefix("custom:")
     return name if name else None
+
+
+def resolve_acl_connector_parent(repo: Any, instance_id: str, user_id: int) -> Any | None:
+    """Map a synthetic custom-MCP child id to its parent connector row.
+
+    The resource ACL lives on the parent custom-mcp row: ``custom:PARENT:NAME``
+    points at a shared parent directly, plain ``custom:NAME`` is one of the
+    caller's own servers. Anything else is not a synthetic id (``None``), so
+    callers fall back to the plain row lookup.
+    """
+    raw = parse_synthetic_instance_id(instance_id)
+    if raw is None:
+        return None
+    parent_id, separator, _ = raw.partition(":")
+    if separator:
+        parent = repo.get(parent_id)
+        if parent is not None and is_custom_mcp_kind(parent.kind):
+            return parent
+        return None
+    return repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
 
 
 def server_enabled(spec: dict[str, Any]) -> bool:
@@ -181,6 +202,10 @@ def normalize_server_spec(name: str, raw: Any) -> dict[str, Any]:
         spec["default_open"] = True
     if raw.get("shared") is True:
         spec["shared"] = True
+    # Opt-in delegated identity (T3): Octop injects a short-lived JWT at
+    # harness-spec build time; see octop.infra.connectors.delegation.
+    if raw.get("delegate_identity") is True:
+        spec["delegate_identity"] = True
 
     display_name = str(raw.get("display_name") or "").strip()
     if display_name:
@@ -365,8 +390,15 @@ def merge_preserved_oauth(
     return out
 
 
-def harness_spec_for_server(spec: dict[str, Any]) -> dict[str, Any]:
-    """Strip Octop meta keys; keep langchain-mcp-adapters connection fields."""
+def harness_spec_for_server(
+    spec: dict[str, Any], delegate_token: str | None = None
+) -> dict[str, Any]:
+    """Strip Octop meta keys; keep langchain-mcp-adapters connection fields.
+
+    ``delegate_token``: delegated-identity JWT for servers that opted in with
+    ``delegate_identity: true`` (see ``octop.infra.connectors.delegation``).
+    ``None`` (or a server without the flag) leaves the spec untouched.
+    """
     out = {k: v for k, v in spec.items() if k not in _HARNESS_STRIP_KEYS}
     # Ensure stdio always has args list for adapters.
     if out.get("transport") == "stdio" and "args" not in out:
@@ -378,19 +410,23 @@ def harness_spec_for_server(spec: dict[str, Any]) -> dict[str, Any]:
         token = str(oauth.get("access_token") or "").strip()
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        elif delegate_token and spec_wants_delegated_identity(spec):
+            headers["Authorization"] = f"Bearer {delegate_token}"
         headers.setdefault("Accept", _MCP_STREAMABLE_HTTP_ACCEPT)
         out["headers"] = headers
     return out
 
 
-def enabled_harness_configs(servers: dict[str, Any]) -> dict[str, Any]:
+def enabled_harness_configs(
+    servers: dict[str, Any], delegate_token: str | None = None
+) -> dict[str, Any]:
     configs: dict[str, Any] = {}
     for name, spec in servers.items():
         if not isinstance(spec, dict):
             continue
         if not server_enabled(spec):
             continue
-        configs[name] = harness_spec_for_server(spec)
+        configs[name] = harness_spec_for_server(spec, delegate_token=delegate_token)
     return configs
 
 
@@ -425,6 +461,11 @@ def expand_custom_instances(
                 "default_open": spec.get("default_open") is True,
                 "shared": spec.get("shared") is True,
                 "owner_user_id": parent.user_id,
+                # ACL/tenancy live on the parent custom-mcp row; children echo it
+                # so the admin resource-ACL tab can show (and save through to)
+                # the parent's configuration.
+                "org_id": parent.org_id,
+                "allowed_roles": list(parent.allowed_roles or []),
                 "created_at": parent.created_at,
                 "updated_at": parent.updated_at,
             }

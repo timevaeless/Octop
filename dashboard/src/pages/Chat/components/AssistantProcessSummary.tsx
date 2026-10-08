@@ -110,6 +110,23 @@ function AssistantProcessSummary({
     }
   }, [isStreaming, collapseThinking]);
 
+  // The thinking card is height-capped (see .processThinkingItem), so follow its
+  // tail while the model is still writing instead of freezing on the first lines.
+  const lastThinkingRef = useRef<HTMLDivElement>(null);
+  const lastThinkingIdx = useMemo(() => {
+    for (let i = split.processSteps.length - 1; i >= 0; i -= 1) {
+      if (split.processSteps[i].kind === "thinking") return i;
+    }
+    return -1;
+  }, [split.processSteps]);
+
+  useEffect(() => {
+    if (!isStreaming || !expanded) return;
+    const el = lastThinkingRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [isStreaming, expanded, split.processSteps]);
+
   if (toolCount === 0 && thinkingCount === 0) return null;
 
   const summaryText =
@@ -166,6 +183,7 @@ function AssistantProcessSummary({
               <div
                 key={`${step.item.messageId}-thinking-${idx}`}
                 className={styles.processThinkingItem}
+                ref={lastThinkingIdx === idx ? lastThinkingRef : undefined}
               >
                 <Markdown
                   content={step.item.content}

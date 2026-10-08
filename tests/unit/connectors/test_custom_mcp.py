@@ -24,6 +24,8 @@ from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.utils.ulid import new_ulid
 
+ORG = "cheryfs"
+
 
 @pytest.fixture
 def db(tmp_path: Path) -> SqlitePool:
@@ -219,6 +221,69 @@ def test_display_name_normalized_and_used_in_list_api(svc: ConnectorService, db:
     assert len(listed) == 1
     assert listed[0]["mcp_server_name"] == "http-server-1"
     assert listed[0]["display_name"] == "我的知识库"
+
+
+def test_list_instances_echoes_org_and_allowed_roles(svc: ConnectorService, db: SqlitePool):
+    """Regression: the admin resource-ACL tab reads tenancy/ACL off the listing.
+
+    Expanded custom-MCP children inherit the parent row's values (the ACL lives
+    on the parent); a stored ACL must survive a refresh instead of rendering
+    as "unknown" on the dashboard.
+    """
+    from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND as KIND
+
+    uid = _ensure_user(db)
+    svc.put_custom_servers(
+        uid,
+        {
+            "linear": {
+                "transport": "streamable_http",
+                "url": "https://mcp.linear.app/mcp",
+            },
+        },
+        org_id=ORG,
+    )
+    parent = svc._repo.get_by_user_kind(uid, KIND)
+    assert parent is not None
+    svc._repo.update_metadata(parent.instance_id, allowed_roles=["finance_operator"])
+
+    listed = svc.list_instances_for_api(uid)
+    assert len(listed) == 1
+    row = listed[0]
+    assert row["org_id"] == ORG
+    assert row["allowed_roles"] == ["finance_operator"]
+
+
+def test_resolve_acl_connector_parent_maps_synthetic_ids(db: SqlitePool):
+    """``custom:PARENT:NAME`` → shared parent row; ``custom:NAME`` → own row."""
+    from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND as KIND
+    from octop.infra.connectors.custom_mcp import resolve_acl_connector_parent
+
+    repo = ConnectorRepo(db)
+    uid = _ensure_user(db)
+    parent_iid = repo.create(
+        instance_id=new_ulid(),
+        user_id=uid,
+        kind=KIND,
+        display_name="custom-mcp",
+        mcp_server_name="custom-mcp",
+        shared=True,
+        org_id=ORG,
+    )
+    parent = repo.get(parent_iid)
+    assert parent is not None
+
+    # Shared child: parent id embedded in the synthetic id.
+    shared_child = f"custom:{parent.instance_id}:linear"
+    assert resolve_acl_connector_parent(repo, shared_child, uid).instance_id == (parent.instance_id)
+    # Own child: resolves to the caller's custom-mcp row.
+    assert resolve_acl_connector_parent(repo, "custom:linear", uid).instance_id == (
+        parent.instance_id
+    )
+    # Not a synthetic id → None (caller falls back to the plain lookup).
+    assert resolve_acl_connector_parent(repo, parent.instance_id, uid) is None
+    # Shared child pointing at a non-existent parent → None.
+    assert resolve_acl_connector_parent(repo, "custom:nope:linear", uid) is None
 
 
 def test_harness_spec_stdio_default_args():
@@ -506,3 +571,30 @@ async def test_ensure_fresh_custom_servers_keeps_valid_token_when_refresh_fails(
     preview = svc.get_custom_servers_for_api(uid)
     assert preview["srv"]["oauth"]["configured"] is True
     assert svc.get_custom_servers(uid)["srv"]["oauth"]["access_token"] == "still-valid"
+
+
+def test_resave_adopts_org_for_orgless_parent_row(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    """A pre-018 parent row carries org_id NULL (2026-09-27: unattributed).
+
+    The owner re-saving their servers must adopt the tenant (review
+    2026-09-26 P1-4): otherwise the row stays orgless forever and its
+    shared servers stay visible platform-wide.
+    """
+    uid = _ensure_user(db)
+    servers = {
+        "linear": {
+            "transport": "streamable_http",
+            "url": "https://mcp.linear.app/mcp",
+        }
+    }
+    svc.put_custom_servers(uid, servers, org_id=None)
+    row = svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND)
+    assert row is not None
+    assert row.org_id is None
+
+    svc.put_custom_servers(uid, servers, org_id=ORG)
+    adopted = svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND)
+    assert adopted is not None
+    assert adopted.org_id == ORG

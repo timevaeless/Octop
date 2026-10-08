@@ -26,4 +26,4 @@ CREATE INDEX IF NOT EXISTS idx_bridge_connections_owner
 CREATE UNIQUE INDEX IF NOT EXISTS idx_bridge_connections_owner_display
   ON bridge_connections(owner_user_id, display_name);
 
-UPDATE _schema_version SET version = 19;
+UPDATE _schema_version SET version = 35;

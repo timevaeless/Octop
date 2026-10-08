@@ -79,6 +79,7 @@ class InviteService:
         actor_username: str,
         note: str | None = None,
         expires_in_days: int = DEFAULT_EXPIRES_DAYS,
+        org_id: str | None = None,
         role_name: str | None = None,
         role: str | None = None,
     ) -> InviteRow:
@@ -89,6 +90,12 @@ class InviteService:
                 f"expires_in_days must be between {MIN_EXPIRES_DAYS} and {MAX_EXPIRES_DAYS}",
                 status=400,
             )
+        # T4-1 pluggable hook (octop.infra.users.invite_tenancy): optional
+        # tenant binding. Lazy import; deleting the module restores community
+        # behaviour verbatim.
+        from octop.infra.users.invite_tenancy import validate_invite_org
+
+        bound_org = validate_invite_org(self._services, org_id)
         cleaned = note.strip() if isinstance(note, str) else None
         if cleaned == "":
             cleaned = None
@@ -102,6 +109,7 @@ class InviteService:
                     created_by=created_by,
                     expires_at=expires_at,
                     note=cleaned,
+                    org_id=bound_org,
                     role_name=role_name,
                     role=role,
                 )
@@ -109,6 +117,7 @@ class InviteService:
                     actor=actor_username,
                     action="invite.create",
                     target=code,
+                    payload=f"org={bound_org}" if bound_org else None,
                 )
                 return row
         raise OctopError(ErrorCode.INTERNAL_ERROR, "failed to allocate invite code")
@@ -229,6 +238,14 @@ class InviteService:
             actor=cleaned_username,
             action="invite.redeem",
             target=cleaned_code,
+        )
+        # T4-1 pluggable hook (octop.infra.users.invite_tenancy): audit echo
+        # for the tenant binding applied in-transaction by the repo. Lazy
+        # import; deleting the module restores community behaviour verbatim.
+        from octop.infra.users.invite_tenancy import record_invite_org_audit
+
+        record_invite_org_audit(
+            self._services, username=cleaned_username, org_id=_invite.org_id
         )
         return user
 

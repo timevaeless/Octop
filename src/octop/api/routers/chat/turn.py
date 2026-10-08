@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,8 @@ __all__ = [
     "prepare_dashboard_turn",
     "turn_has_content",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -248,12 +251,26 @@ async def prepare_dashboard_turn(
             connector_user_id=user.id,
         )
         if failed:
-            locale = getattr(user, "locale", None) or "zh"
-            raise OctopError.localized(
-                ErrorCode.CONNECTOR_MCP_LOAD_FAILED,
-                locale,
-                servers=", ".join(failed),
+            # Partial failure degrades instead of aborting the turn: keep the
+            # servers whose tools loaded and drop the unavailable ones (e.g. a
+            # connector denied by hub tool ACL). Only a total failure aborts —
+            # the client still deserves a clear error when nothing mounted.
+            remaining = [n for n in mcp_servers if n not in failed]
+            if not remaining:
+                locale = getattr(user, "locale", None) or "zh"
+                raise OctopError.localized(
+                    ErrorCode.CONNECTOR_MCP_LOAD_FAILED,
+                    locale,
+                    servers=", ".join(failed),
+                )
+            logger.warning(
+                "dashboard turn MCP degraded agent=%s user=%s: failed=%s loaded=%s",
+                agent_id,
+                user.id,
+                failed,
+                remaining,
             )
+            mcp_servers = remaining
 
     thread_registry = server.app_runtime.gateway.thread_registry
     thread_id, session_key = await resolve_thread_id(

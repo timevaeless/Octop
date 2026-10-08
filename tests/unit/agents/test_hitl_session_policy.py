@@ -150,13 +150,17 @@ def test_store_set_persists_once() -> None:
 async def test_resume_hitl_binds_thread_scope() -> None:
     seen: list[str | None] = []
 
-    async def fake_resume(agent_id: str, thread_id: str, decisions: list[dict[str, Any]]) -> Any:
+    async def fake_resume(
+        agent_id: str, thread_id: str, decisions: list[dict[str, Any]], **_kwargs: Any
+    ) -> Any:
         seen.append(current_hitl_thread_id())
         if False:
             yield {}
 
     manager = AgentManager.__new__(AgentManager)
     manager._harness_manager = SimpleNamespace(resume_hitl=fake_resume)
+    # No repos wired: default_mcp_servers resolves row=None → [] → no extras.
+    manager._repos = SimpleNamespace(agent_repo=SimpleNamespace(get=lambda _aid: None))
     manager._history_backfills = {}
     manager._invocation_waiters = {}
     manager._active_invocations = {}

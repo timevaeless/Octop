@@ -53,6 +53,7 @@ async def audit_log(
     since: int | None = None,
     actor: str | None = None,
     action: str | None = None,
+    org_id: str | None = None,
     limit: int = Query(
         default=100,
         ge=1,
@@ -62,7 +63,9 @@ async def audit_log(
     _: Any = Depends(require_permission("admin_console")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    rows = server.services.audit_repo.query(since=since, actor=actor, action=action, limit=limit)
+    rows = server.services.audit_repo.query(
+        since=since, actor=actor, action=action, org_id=org_id, limit=limit
+    )
     return [
         {
             "id": r.id,
@@ -71,6 +74,7 @@ async def audit_log(
             "action": r.action,
             "target": r.target,
             "payload": r.payload,
+            "org_id": r.org_id,
         }
         for r in rows
     ]

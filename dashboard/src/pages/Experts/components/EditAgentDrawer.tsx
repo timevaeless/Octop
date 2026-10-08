@@ -850,7 +850,7 @@ function EditAgentDrawerBody({
                 onUpdatePathMapping={updatePathMapping}
               />
               <AgentTrajectoryField />
-              <ExpertComposerDefaultsFields />
+              <ExpertComposerDefaultsFields agentId={agent.agent_id} />
               {!skillPackagesSupported ? (
                 <Alert
                   type="info"

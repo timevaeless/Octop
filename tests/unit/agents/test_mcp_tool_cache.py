@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool, StructuredTool
 
+from octop.infra.connectors.delegation import (
+    DELEGATION_REFRESH_MARGIN_SECONDS,
+    mint_delegated_token,
+    spec_token_exp,
+)
 from octop.infra.connectors.mcp_tool_cache import (
     fingerprint_mcp_spec,
     wrap_tools_for_shared_use,
@@ -260,3 +266,183 @@ def test_wrap_tools_for_shared_use() -> None:
     wrapped = wrap_tools_for_shared_use([inner], lock)
     assert len(wrapped) == 1
     assert isinstance(wrapped[0], StructuredTool)
+
+
+# ------------------------------------------- delegated-token refresh (T3)
+
+
+def _fresh_mgr() -> Any:
+    from octop.infra.agents.manager import AgentManager
+
+    mgr = object.__new__(AgentManager)
+    mgr._mcp_tool_cache = {}
+    mgr._mcp_tool_cache_locks = {}
+    mgr._mcp_tool_cache_guard = asyncio.Lock()
+    mgr._paths = MagicMock(root=MagicMock())
+    return mgr
+
+
+def _delegated_spec() -> dict[str, Any]:
+    token = mint_delegated_token(b"k" * 32, uid=7, org_id="cheryfs", role_keys=["r"])
+    return {
+        "transport": "streamable_http",
+        "url": "http://192.168.181.1:8090/mcp",
+        "headers": {"Authorization": f"Bearer {token}"},
+    }
+
+
+def _fake_tool(name: str) -> MagicMock:
+    t = MagicMock()
+    t.name = name
+    t.description = "t"
+    t.args_schema = None
+    t.metadata = None
+    t.ainvoke = AsyncMock(return_value="ok")
+    return t
+
+
+@pytest.mark.asyncio
+async def test_get_or_load_records_delegation_expiry() -> None:
+    mgr = _fresh_mgr()
+    spec = _delegated_spec()
+    with patch("octop_harness.mcp.aload_mcp_tools", AsyncMock(return_value=[_fake_tool("hub_t")])):
+        await mgr._get_or_load_mcp_tools(7, "hub", spec)
+        assert mgr._mcp_token_expiry[(7, "hub")] == pytest.approx(spec_token_exp(spec))
+        # Static-auth connection records None and is never refreshed.
+        await mgr._get_or_load_mcp_tools(
+            7, "static", {"transport": "streamable_http", "url": "http://x/mcp"}
+        )
+    assert mgr._mcp_token_expiry[(7, "static")] is None
+
+
+def test_mcp_delegation_expiring_margins() -> None:
+    from octop.infra.agents.manager import AgentManager
+
+    mgr = _fresh_mgr()
+    assert not AgentManager._mcp_delegation_expiring(mgr, None, "hub")  # no user
+    assert not mgr._mcp_delegation_expiring(7, "absent")  # nothing cached
+    mgr._mcp_token_expiry = {}  # store materializes lazily (object.__new__ doubles)
+    mgr._mcp_token_expiry[(7, "static")] = None
+    assert not mgr._mcp_delegation_expiring(7, "static")  # not delegated
+    mgr._mcp_token_expiry[(7, "fresh")] = time.time() + 1700
+    assert not mgr._mcp_delegation_expiring(7, "fresh")  # outside margin
+    mgr._mcp_token_expiry[(7, "hub")] = time.time() + DELEGATION_REFRESH_MARGIN_SECONDS / 2
+    assert mgr._mcp_delegation_expiring(7, "hub")  # inside margin
+
+
+def test_replace_server_mcp_tools_swaps_only_that_server() -> None:
+    from octop.infra.agents.manager import AgentManager
+
+    hub_old, other, hub_stale = _fake_tool("hub_a"), _fake_tool("other_b"), _fake_tool("hub_c")
+    new_a, new_b = _fake_tool("hub_a2"), _fake_tool("hub_b2")
+    agent = MagicMock()
+    agent._mcp_tools = [hub_old, other, hub_stale]
+    AgentManager._replace_server_mcp_tools(agent, "hub", [new_a, new_b])
+    replaced = agent.replace_mcp_tools.call_args.args[0]
+    assert replaced == [other, new_a, new_b]
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_mcp_refreshes_expiring_delegated_token() -> None:
+    """Mounted tools on an expiring delegated token are swapped, not appended."""
+    mgr = _fresh_mgr()
+    mgr._mcp_token_expiry = {(7, "hub"): time.time() + DELEGATION_REFRESH_MARGIN_SECONDS / 2}
+
+    old_tool, fresh_tool = _fake_tool("hub_tool1"), _fake_tool("hub_tool1")
+    agent = MagicMock()
+    agent._mcp_tools = [old_tool]
+    agent._mcp_tool_name_set = frozenset({"hub_tool1"})
+    agent.config.mcp_server_configs = {}
+    agent.replace_mcp_tools = MagicMock(
+        side_effect=lambda tools: (
+            setattr(agent, "_mcp_tools", list(tools)),
+            setattr(
+                agent,
+                "_mcp_tool_name_set",
+                frozenset(str(getattr(t, "name", "")) for t in tools),
+            ),
+        )
+    )
+
+    fresh_spec = _delegated_spec()
+    mgr.get_agent = MagicMock(return_value=agent)
+    mgr.get_row = MagicMock(return_value=MagicMock())
+    mgr._connector_uid_for = MagicMock(return_value=7)
+    mgr._connector_svc = MagicMock()
+    mgr._connector_svc.custom_harness_configs.return_value = {"hub": fresh_spec}
+
+    with patch("octop_harness.mcp.aload_mcp_tools", AsyncMock(return_value=[fresh_tool])):
+        failed = await mgr.prepare_chat_mcp("A1", ["hub"], connector_user_id=7)
+
+    assert failed == []
+    agent.append_mcp_tools.assert_not_called()  # append dedupes by name → must not be used
+    agent.replace_mcp_tools.assert_called_once()
+    replaced = agent.replace_mcp_tools.call_args.args[0]
+    # aload's mock tool comes back wrapped as a StructuredTool named hub_tool1;
+    # the stale-token wrapper must be gone.
+    assert len(replaced) == 1
+    assert isinstance(replaced[0], StructuredTool)
+    assert replaced[0].name == "hub_tool1"
+    assert old_tool not in replaced
+    assert agent.config.mcp_server_configs["hub"] == fresh_spec
+    # Expiry bookkeeping follows the fresh token (≈ now + TTL).
+    assert mgr._mcp_token_expiry[(7, "hub")] == pytest.approx(spec_token_exp(fresh_spec))
+    assert time.time() + 1700 < mgr._mcp_token_expiry[(7, "hub")] <= time.time() + 1800
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_mcp_skips_refresh_while_token_fresh() -> None:
+    mgr = _fresh_mgr()
+    mgr._mcp_token_expiry = {(7, "hub"): time.time() + 1700}
+
+    agent = MagicMock()
+    agent._mcp_tool_name_set = frozenset({"hub_tool1"})
+    mgr.get_agent = MagicMock(return_value=agent)
+    mgr.get_row = MagicMock(return_value=MagicMock())
+    mgr._connector_uid_for = MagicMock(return_value=7)
+    mgr._connector_svc = MagicMock()
+
+    failed = await mgr.prepare_chat_mcp("A1", ["hub"], connector_user_id=7)
+
+    assert failed == []
+    mgr._connector_svc.custom_harness_configs.assert_not_called()  # early return, no DB hit
+
+
+def test_mcp_delegation_expiring_is_per_agent() -> None:
+    """P1-5: renewal judgment follows the spec mounted on *this* agent.
+
+    The global (user, server) store is updated by whichever agent renewed
+    first; the old logic read only that store, so a second agent holding a
+    stale mounted token was told "fresh" and never self-healed.
+    """
+    from octop.infra.agents.manager import AgentManager
+
+    mgr = _fresh_mgr()
+    # The store says a fresh token was just recorded (agent A renewed).
+    mgr._mcp_token_expiry = {(7, "hub"): time.time() + 1700}
+
+    fresh_spec = _delegated_spec()  # exp ≈ now + 1800 → outside margin
+    # Agent B still carries the old mount: a token minted with a 10s TTL.
+    stale_token = mint_delegated_token(b"k" * 32, uid=7, org_id="cheryfs", role_keys=["r"], ttl_seconds=10)
+    stale_spec = {
+        "transport": "streamable_http",
+        "url": "http://x/mcp",
+        "headers": {"Authorization": f"Bearer {stale_token}"},
+    }
+
+    agent_a = MagicMock()
+    agent_a.config.mcp_server_configs = {"hub": dict(fresh_spec)}
+    agent_b = MagicMock()
+    agent_b.config.mcp_server_configs = {"hub": dict(stale_spec)}
+
+    # Same user, same server, different mounted generations:
+    assert not AgentManager._mcp_delegation_expiring(mgr, 7, "hub", agent=agent_a)
+    assert AgentManager._mcp_delegation_expiring(mgr, 7, "hub", agent=agent_b)
+
+    # No per-agent stamp (legacy mount) → falls back to the store.
+    agent_legacy = MagicMock()
+    agent_legacy.config.mcp_server_configs = {}
+    assert not AgentManager._mcp_delegation_expiring(mgr, 7, "hub", agent=agent_legacy)
+
+    # No agent context at all → store fallback only (old behavior).
+    assert not AgentManager._mcp_delegation_expiring(mgr, 7, "hub")

@@ -52,7 +52,12 @@ async def validate_chat_mcp_servers(
         config=server.services.config,
     )
     try:
-        return list(svc.validate_mcp_servers_for_user(user_id, names))
+        from octop.infra.users.context import authz_binding
+
+        with authz_binding(
+            server.services.user_repo, server.services.org_repo, user_id
+        ) as authz:
+            return list(svc.validate_mcp_servers_for_user(user_id, names, authz))
     except ValueError as exc:
         raise OctopError(ErrorCode.CONNECTOR_NOT_BOUND, str(exc)) from exc
 

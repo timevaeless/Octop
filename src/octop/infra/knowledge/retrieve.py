@@ -74,11 +74,22 @@ def _retrieve_context_sync(
 
     visible = visible_bases
     if visible is None:
-        visible = (
-            services.knowledge_repo.list_all()
-            if is_admin
-            else services.knowledge_repo.list_visible(user_id)
-        )
+        if is_admin:
+            visible = services.knowledge_repo.list_all()
+        else:
+            user_repo = getattr(services, "user_repo", None)
+            org_repo = getattr(services, "org_repo", None)
+            if user_repo is not None and org_repo is not None:
+                from octop.infra.users.context import authz_binding
+
+                with authz_binding(user_repo, org_repo, user_id) as authz:
+                    visible = services.knowledge_repo.list_visible(
+                        user_id, org_id=authz.org_id, role_keys=authz.role_filter
+                    )
+            else:
+                # Test/legacy services without tenancy repos: keep the plain
+                # per-user visibility (production always has both repos).
+                visible = services.knowledge_repo.list_visible(user_id)
     visible_by_id = {base.id: base for base in visible}
     selected_ids = _unique_ids(knowledge_base_ids)
 

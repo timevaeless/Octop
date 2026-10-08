@@ -376,3 +376,40 @@ async def test_apply_workspace_quick_prompts_refuses_invalid_json() -> None:
     with pytest.raises(OctopError) as exc:
         await apply_workspace_quick_prompts(workspace, [])
     assert exc.value.code is ErrorCode.SLASH_BAD_ARGS
+
+
+def test_build_create_spec_from_expert_stamps_org_id() -> None:
+    """Regression: from-expert installs must carry the caller's org stamp.
+
+    Omitting ``org_id`` inserts an unattributed ``agents`` row, which RLS
+    rejects for tenant callers (InsufficientPrivilege -> HTTP 500).
+    """
+    from types import SimpleNamespace
+
+    from octop.infra.agents.experts.catalog import build_create_spec_from_expert
+
+    expert = SimpleNamespace(
+        summary=SimpleNamespace(
+            label_zh="进件助手",
+            label_en="Intake Assistant",
+            description_zh=None,
+            description_en=None,
+            icon_name=None,
+            icon_url=None,
+            color=None,
+        ),
+    )
+    spec = build_create_spec_from_expert(
+        expert_id="intake",
+        expert=expert,  # type: ignore[arg-type]
+        user_id=7,
+        org_id="cheryfs",
+    )
+    assert spec.org_id == "cheryfs"
+
+    spec_unattributed = build_create_spec_from_expert(
+        expert_id="intake",
+        expert=expert,  # type: ignore[arg-type]
+        user_id=1,
+    )
+    assert spec_unattributed.org_id is None

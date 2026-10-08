@@ -138,6 +138,7 @@ def test_put_config_encrypts_with_supplied_secret_repo_and_redacts_for_admin(
         "dashboard_origin": None,
         "has_client_secret": True,
         "redirect_uri": "https://octop.example/api/auth/oidc/callback",
+        "slo": {"end_session_endpoint": None, "post_logout_redirect_uri": None},
     }
     assert "client_secret" not in result
     assert service._services.sso_repo.get_provider().client_secret_enc == b"ciphertext"

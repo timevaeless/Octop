@@ -910,8 +910,15 @@ def build_create_spec_from_expert(
     skill_package_ids: list[str] | None = None,
     knowledge_base_ids: list[str] | None = None,
     mcp_servers: list[str] | None = None,
+    org_id: str | None = None,
 ) -> AgentCreateSpec:
-    """Build :class:`AgentCreateSpec` for ``AgentManager.create`` from a catalog entry."""
+    """Build :class:`AgentCreateSpec` for ``AgentManager.create`` from a catalog entry.
+
+    ``org_id`` follows the 2026-09-27 attribution rule: callers stamp
+    ``creator_org_id(user)`` so tenant users get their tenant and platform
+    admins stay unattributed. Leaving it ``None`` here would insert an
+    unattributed ``agents`` row and RLS would reject it for tenant callers.
+    """
     resolved_name = resolve_expert_agent_name(expert, expert_id, locale=locale, override=name)
     if description:
         resolved_description = description
@@ -957,4 +964,5 @@ def build_create_spec_from_expert(
         mcp_servers=mcp_servers,
         published_expert_id=published_expert_id,
         welcome_message=welcome_message,
+        org_id=org_id,
     )

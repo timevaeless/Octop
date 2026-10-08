@@ -207,52 +207,68 @@ export function useChatComposerResources(
     }
     let cancelled = false;
     const loadConnectors = () => {
-      void connectorsApi
-        .listInstances(remoteBridge ? resolvedAgentId : undefined)
-        .then((instances) => {
-          if (cancelled) return;
-          const options = (instances ?? [])
-            .filter((i) => i.status === "active" && i.has_credentials)
-            .map((i) => ({
-              mcp_server_name: i.mcp_server_name,
-              label:
-                !remoteBridge &&
-                currentUserId !== null &&
-                i.owner_user_id !== currentUserId
-                  ? `${i.display_name} · ${
-                      i.owner_display_name ||
-                      i.owner_username ||
-                      i.owner_user_id
-                    }`
-                  : i.display_name,
-              kind: i.kind,
-              default_open: remoteBridge
-                ? i.default_open === true
-                : i.default_open === true && i.owner_user_id === currentUserId,
-            }));
-          setChatConnectors(options);
-          const allowed = new Set(options.map((o) => o.mcp_server_name));
-          const defaults = withDefaultOpenKnowledgeBases(
-            options.filter((o) => o.default_open).map((o) => o.mcp_server_name),
-            expertMcpServers ?? [],
-          );
-          setSelectedConnectors((prev) =>
-            resolveInitialConnectors({
-              prev,
-              saved: resolvedAgentId
-                ? loadSavedConnectors(resolvedAgentId)
-                : [],
-              hasSaved: resolvedAgentId
-                ? hasSavedConnectors(resolvedAgentId)
-                : false,
-              defaults,
-              allowed,
-              ignorePrev: isNewSession && !composerTouchedRef.current,
-              ignoreSaved: isNewSession,
-              preferPrev: composerTouchedRef.current,
-            }),
-          );
-        });
+      // Remote bridge experts proxy to the peer instance: list ITS connectors
+      // for this agent (X-Octop-Agent-Id header). Local experts read the
+      // assignable listing — names must be in the SAME namespace as
+      // expert.mcp_servers and turn-time validation. Catalog (目录接入)
+      // attachments are mountable under their harness key
+      // ("custom__…__mcp-…"), which the raw listing never emits — the
+      // scope.has() filter below would drop them and the connector would
+      // vanish from the composer (2026-10-01).
+      const load = remoteBridge
+        ? connectorsApi.listInstances(resolvedAgentId)
+        : connectorsApi.listAssignable();
+      void load.then((instances) => {
+        if (cancelled) return;
+        const all = (instances ?? [])
+          .filter((i) => i.status === "active" && i.has_credentials)
+          .map((i) => ({
+            mcp_server_name: i.mcp_server_name,
+            label:
+              !remoteBridge &&
+              currentUserId !== null &&
+              i.owner_user_id !== currentUserId
+                ? `${i.display_name} · ${
+                    i.owner_display_name || i.owner_username || i.owner_user_id
+                  }`
+                : i.display_name,
+            kind: i.kind,
+            default_open: remoteBridge
+              ? i.default_open === true
+              : i.default_open === true && i.owner_user_id === currentUserId,
+          }));
+        // Composer picker is scoped to what THIS expert brings: its configured
+        // connectors plus the user's default-open ones (the latter must stay
+        // listed so the user can see and opt out of them per chat). Everything
+        // else the user owns is invisible here — configure it on the expert
+        // first if it should be usable in its chats. Remote bridges bypass the
+        // scope: the peer agent's own list is authoritative (and
+        // expertMcpServers is empty for them by design).
+        const scope = new Set(expertMcpServers ?? []);
+        const options = remoteBridge
+          ? all
+          : all.filter((o) => scope.has(o.mcp_server_name) || o.default_open);
+        setChatConnectors(options);
+        const allowed = new Set(options.map((o) => o.mcp_server_name));
+        const defaults = withDefaultOpenKnowledgeBases(
+          options.filter((o) => o.default_open).map((o) => o.mcp_server_name),
+          expertMcpServers ?? [],
+        );
+        setSelectedConnectors((prev) =>
+          resolveInitialConnectors({
+            prev,
+            saved: resolvedAgentId ? loadSavedConnectors(resolvedAgentId) : [],
+            hasSaved: resolvedAgentId
+              ? hasSavedConnectors(resolvedAgentId)
+              : false,
+            defaults,
+            allowed,
+            ignorePrev: isNewSession && !composerTouchedRef.current,
+            ignoreSaved: isNewSession,
+            preferPrev: composerTouchedRef.current,
+          }),
+        );
+      });
     };
     loadConnectors();
     const onFocus = () => loadConnectors();

@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass, field
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import UNSET, DbRow, bool_int, map_rows, now_ts, optional_updates
+from octop.infra.db.repos._base import (
+    UNSET,
+    DbRow,
+    bool_int,
+    map_rows,
+    now_ts,
+    optional_updates,
+    # (roles_allow moved to octop.infra.users.resource_acl — T2 pluggable hook)
+)
 
 
 def _opt_str(r: DbRow, key: str) -> str | None:
@@ -17,6 +27,14 @@ def _opt_str(r: DbRow, key: str) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _parse_role_list(raw: object) -> list[str]:
+    # T2 pluggable hook (octop.infra.users.resource_acl): shared ACL parser
+    # (was one of four byte-identical copies woven into the repos).
+    from octop.infra.users.resource_acl import parse_role_list
+
+    return parse_role_list(raw)
 
 
 @dataclass(frozen=True)
@@ -46,6 +64,9 @@ class AgentRow:
     welcome_message: str | None = None
     knowledge_base_ids: str | None = None
     mcp_servers: str | None = None
+    # Tenancy + resource ACL (016/017). ``org_id=None`` = platform-wide.
+    org_id: str | None = None
+    allowed_roles: list[str] = field(default_factory=list)
     kind: str = "expert"
 
     @classmethod
@@ -54,6 +75,7 @@ class AgentRow:
             is_shared = int(r["is_shared"])
         except KeyError:
             is_shared = 0
+        keys = set(r.keys())
         try:
             kind_raw = r["kind"]
         except (KeyError, IndexError):
@@ -87,6 +109,8 @@ class AgentRow:
             welcome_message=_opt_str(r, "welcome_message"),
             knowledge_base_ids=_opt_str(r, "knowledge_base_ids"),
             mcp_servers=_opt_str(r, "mcp_servers"),
+            org_id=_opt_str(r, "org_id") if "org_id" in keys else None,
+            allowed_roles=_parse_role_list(r["allowed_roles"] if "allowed_roles" in keys else None),
             kind=kind,
         )
 
@@ -116,8 +140,16 @@ class AgentRepo:
         welcome_message: str | None = None,
         knowledge_base_ids: str | None = None,
         mcp_servers: str | None = None,
+        org_id: str | None = None,
         kind: str = "expert",
     ) -> str:
+        """Create an agent row.
+
+        ``org_id`` stamps the creator's tenant at creation time; once the
+        agent is shared, that tenant is the hard visibility boundary
+        (``list_shared``) and the by-id access gate. ``None`` means
+        platform-shared — share-time stamping can still scope it later.
+        """
         ts = now_ts()
         agent_kind = kind if kind in {"expert", "team"} else "expert"
         with self._db.transaction() as conn:
@@ -126,8 +158,8 @@ class AgentRepo:
                 "persona_mbti, default_model, system_prompt, enabled, config_json, icon, "
                 "template_name, color, icon_name, icon_url, skill_package_ids, "
                 "published_expert_id, welcome_message, knowledge_base_ids, mcp_servers, "
-                "kind, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "org_id, kind, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     user_id,
@@ -147,6 +179,7 @@ class AgentRepo:
                     welcome_message,
                     knowledge_base_ids,
                     mcp_servers,
+                    org_id,
                     agent_kind,
                     ts,
                     ts,
@@ -203,13 +236,34 @@ class AgentRepo:
             )
 
     def set_shared(self, agent_id: str, shared: bool) -> None:
+        """Persist whether other users may access this agent.
+
+        2026-09-27: share-time tenant stamping retired — attribution lives on
+        the row (creation stamp / resource-acl assignment) and is the sole
+        authority; the old ``COALESCE(org_id, sharer)`` hook would silently
+        re-assign unattributed admin drafts into the sharer's tenant.
+        """
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE agents SET is_shared = ?, updated_at = ? WHERE agent_id = ?",
                 (bool_int(shared), now_ts(), agent_id),
             )
 
-    def list_shared(self, *, exclude_user_id: int | None = None) -> list[AgentRow]:
+    def list_shared(
+        self,
+        *,
+        exclude_user_id: int | None = None,
+        org_id: str | None = None,
+        role_keys: Sequence[str] | None = None,
+    ) -> list[AgentRow]:
+        """Shared agents visible to the viewer.
+
+        Historically this returned EVERY shared agent platform-wide — a
+        structural cross-tenant leak. Tenancy is now the hard boundary: a
+        shared row with ``org_id`` set is invisible outside that tenant, and
+        ``role_keys`` (when not ``None``) additionally applies the resource
+        ACL. ``role_keys=None`` disables the role filter (admin paths).
+        """
         sql = "SELECT * FROM agents WHERE is_shared = 1 AND enabled = 1"
         params: list[object] = []
         if exclude_user_id is not None:
@@ -218,7 +272,43 @@ class AgentRepo:
         sql += " ORDER BY created_at ASC, id ASC"
         with self._db.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
-        return map_rows(rows, AgentRow)
+        mapped = map_rows(rows, AgentRow)
+        # T2 pluggable hook (octop.infra.users.resource_acl): tenancy + ACL
+        # gate for shared rows. Lazy import; deleting the module restores
+        # community behaviour verbatim (i.e. re-opens the cross-tenant leak).
+        from octop.infra.users.resource_acl import visible_shared_row
+
+        return [
+            row
+            for row in mapped
+            if visible_shared_row(
+                row.org_id, row.allowed_roles, viewer_org_id=org_id, role_keys=role_keys
+            )
+        ]
+
+    def set_allowed_roles(self, agent_id: str, allowed_roles: list[str]) -> None:
+        """Replace the shared-agent resource ACL (admin surface)."""
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE agents SET allowed_roles = ?, updated_at = ? WHERE agent_id = ?",
+                (json.dumps(list(allowed_roles), ensure_ascii=False), now_ts(), agent_id),
+            )
+            if int(cur.rowcount or 0) == 0:
+                raise KeyError(f"agent not found: {agent_id}")
+
+    def set_org_id(self, agent_id: str, org_id: str | None) -> None:
+        """Assign the row's attribution (admin surface; 2026-09-27).
+
+        ``None`` = unattributed, ``'*'`` = explicit platform share, anything
+        else must be an existing tenant id (validated by the router).
+        """
+        with self._db.transaction() as conn:
+            cur = conn.execute(
+                "UPDATE agents SET org_id = ?, updated_at = ? WHERE agent_id = ?",
+                (org_id, now_ts(), agent_id),
+            )
+            if int(cur.rowcount or 0) == 0:
+                raise KeyError(f"agent not found: {agent_id}")
 
     def set_state(self, agent_id: str, state: str, *, error: str | None = None) -> None:
         with self._db.transaction() as conn:
