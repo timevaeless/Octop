@@ -196,6 +196,13 @@ _EXT_AUTH_DEFAULT_RULE_CONFIG: dict[str, Any] = {
                 {"exact": "x-octop-uid"},
                 {"exact": "x-octop-oid"},
                 {"exact": "x-octop-sid"},
+                # 2026-10-08: identity passthrough for business operators —
+                # hub echoes the delegated token's ``ssu`` claim back as this
+                # header; downstream /mcp-api filters (e.g. laac) resolve the
+                # real operator from it and fail closed without it
+                # (1010000175 "MCP 操作人身份缺失"). Must stay in lockstep with
+                # the hub's response headers.
+                {"exact": "x-octop-ssu"},
                 {"exact": "x-envoy-allow-mcp-tools"},
             ]
         },
