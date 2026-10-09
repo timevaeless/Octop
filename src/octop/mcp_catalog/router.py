@@ -18,7 +18,7 @@ import urllib.request
 from collections.abc import Callable, Iterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
 from octop.api.deps import get_server, require_admin
@@ -1110,6 +1110,9 @@ def publish_service(
     body: PublishBody,
     server: Any = Depends(get_server),
     user: Any = Depends(require_admin()),
+    # Default None keeps direct positional calls (tests) source-compatible;
+    # FastAPI still injects a real BackgroundTasks on every request.
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     repo = _repo(server)
     svc = _service_or_404(repo, service_id)
@@ -1162,6 +1165,12 @@ def publish_service(
         {"acl": detail["acl"], "written": detail["written"]},
         actor=user.username,
     )
+    if not body.dry_run:
+        # T4 pluggable hook (octop.infra.agents.publish_refresh): drop the
+        # stale tool-schema cache + rebuild mounting agents after republish.
+        from octop.infra.agents.publish_refresh import schedule_refresh  # noqa: PLC0415
+
+        schedule_refresh(server, service_id, background_tasks)
     return {
         "dry_run": body.dry_run,
         "acl": detail["acl"],
@@ -1176,6 +1185,7 @@ def unpublish_service(
     body: PublishBody,
     server: Any = Depends(get_server),
     user: Any = Depends(require_admin()),
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     repo = _repo(server)
     svc = _service_or_404(repo, service_id)
@@ -1223,6 +1233,11 @@ def unpublish_service(
                 )
         except Exception:  # noqa: BLE001 — gateway state already flipped
             logger.exception("attachment cleanup failed for service %s", service_id)
+        # T4 pluggable hook (octop.infra.agents.publish_refresh): rebuild
+        # agents still mounting the now-dead URL so their tool set drops it.
+        from octop.infra.agents.publish_refresh import schedule_refresh  # noqa: PLC0415
+
+        schedule_refresh(server, service_id, background_tasks)
     return {"dry_run": body.dry_run, "written": detail["written"]}
 
 
@@ -1231,6 +1246,7 @@ def reconcile_service(
     service_id: str,
     server: Any = Depends(get_server),
     user: Any = Depends(require_admin()),
+    background_tasks: BackgroundTasks = None,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     """Re-derive every gateway config from the DB and push it (review 2.8).
 
@@ -1259,6 +1275,11 @@ def reconcile_service(
         {"acl": detail["acl"], "written": detail["written"]},
         actor=user.username,
     )
+    # T4 pluggable hook (octop.infra.agents.publish_refresh): same semantics
+    # as a publish — the re-pushed gateway config carries the current schema.
+    from octop.infra.agents.publish_refresh import schedule_refresh  # noqa: PLC0415
+
+    schedule_refresh(server, service_id, background_tasks)
     return {"reconciled": service_id, "acl": detail["acl"]}
 
 
