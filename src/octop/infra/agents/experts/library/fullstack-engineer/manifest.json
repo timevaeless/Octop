@@ -1,0 +1,88 @@
+{
+  "id": "fullstack-engineer",
+  "label": {
+    "zh": "全栈开发工程师",
+    "en": "Full-Stack Engineer"
+  },
+  "description": {
+    "zh": "阶段签核制全栈开发数字员工：需求理解 → 计划设计（Gate A）→ 开发 · 单测（Gate B）→ 交付闭环 → 记忆沉淀（Gate C），每道关口人工确认；git worktree 隔离开发，提交物链全程留痕。",
+    "en": "Sign-off gated full-stack dev agent: understand → design (Gate A) → code & test (Gate B) → delivery → knowledge capture (Gate C), each gate confirmed by you; develops in git worktrees with a full artifact chain."
+  },
+  "welcome_message": {
+    "zh": "描述你的开发需求，我按签核制流程推进：理解 → 设计 → Gate A → 编码 → 测试 → Gate B → 交付。首次使用请准备 git 仓库地址与访问凭证。",
+    "en": "Describe your dev task — I'll drive the sign-off flow: understand → design → Gate A → code → test → Gate B → deliver. First time? Have your git repo URL and credentials ready."
+  },
+  "icon_name": "code",
+  "color": "#7c3aed",
+  "prompt_files": [
+    "SOUL.md",
+    "IDENTITY.md",
+    "USER.md"
+  ],
+  "quick_prompts": [
+    {
+      "title": {
+        "zh": "开发一个新需求",
+        "en": "Build a new feature"
+      },
+      "description": {
+        "zh": "从理解阶段开始：澄清需求 → 产出 spec/plan → 等你 Gate A 点头才编码",
+        "en": "Start from understanding: clarify → spec/plan → waits for your Gate A approval before coding"
+      },
+      "prompt": {
+        "zh": "我有一个新需求：\n\n<在这里描述需求>\n\n请按数字员工流程从理解阶段开始，先给 intent 草稿等我校对。",
+        "en": "I have a new feature request:\n\n<describe here>\n\nStart the digital-employee flow from the understanding phase; show me the intent draft first."
+      },
+      "color": "#e8f4ff",
+      "icon_name": "git-branch"
+    },
+    {
+      "title": {
+        "zh": "修复一个缺陷",
+        "en": "Fix a bug"
+      },
+      "description": {
+        "zh": "缺陷流程：复现 → 先写失败测试 → 修复 → 回归对比 → 交付",
+        "en": "Bug flow: reproduce → failing test first → fix → regression compare → deliver"
+      },
+      "prompt": {
+        "zh": "我发现一个问题：\n\n<现象与复现步骤>\n\n请按缺陷流程处理：先复现定位，写失败测试确认，再修复。",
+        "en": "I found an issue:\n\n<symptoms & repro steps>\n\nFollow the bug flow: reproduce, write a failing test, then fix."
+      },
+      "color": "#fef3c7",
+      "icon_name": "bug"
+    },
+    {
+      "title": {
+        "zh": "初始化工程环境",
+        "en": "Set up a project"
+      },
+      "description": {
+        "zh": "提供仓库地址与凭证，clone 到工作区并初始化工程约定",
+        "en": "Give repo URL & credentials; I'll clone and initialize project conventions"
+      },
+      "prompt": {
+        "zh": "请初始化开发环境。仓库地址：<URL>。我的 git 用户名：<用户名>，访问凭证（token）：<token>。clone 后学习工程约定并准备就绪。",
+        "en": "Initialize the dev environment. Repo: <URL>. Git username: <username>, token: <token>. Clone it, learn the project conventions, and get ready."
+      },
+      "color": "#dcfce7",
+      "icon_name": "download"
+    },
+    {
+      "title": {
+        "zh": "知识沉淀与提炼",
+        "en": "Knowledge capture"
+      },
+      "description": {
+        "zh": "汇总知识卡 → 提炼高频规则 → 建议升级工程约定（Gate C 确认后落盘）",
+        "en": "Aggregate knowledge cards → distill rules → propose convention updates (Gate C before write)"
+      },
+      "prompt": {
+        "zh": "对本工程做一次知识沉淀与模式提炼：汇总已有知识卡，提炼高频规则，给出工程约定升级建议草稿等我确认。",
+        "en": "Run a knowledge capture on this project: aggregate cards, distill recurring rules, draft convention updates for my approval."
+      },
+      "color": "#fdf4e7",
+      "icon_name": "book-marked"
+    }
+  ]
+}
