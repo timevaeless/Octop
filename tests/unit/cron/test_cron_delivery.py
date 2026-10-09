@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,7 @@ from octop.infra.db.repos.thread_messages import ThreadMessageRepo
 from octop.infra.db.repos.threads import ThreadRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.users.tenancy_context import TenantScope, current_scope
 
 
 def _command(**overrides: object) -> CronDeliveryCommand:
@@ -370,6 +372,125 @@ async def test_dashboard_text_projects_into_real_sqlite(tmp_path: Path) -> None:
     assert "记得喝水" in page[1].message_json
     gateway.push_session_text.assert_awaited_once()
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_failure_projects_the_prompt(tmp_path: Path) -> None:
+    """A run that dies mid-stream must not leave an empty conversation (#516)."""
+    db, session = _seed_dashboard_thread(tmp_path, thread_id="thr_fail")
+
+    async def _stream(_aid: str, _request: dict):
+        yield {"type": "token", "content": "先查一下"}
+        raise RuntimeError("tool call failed")
+
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    agent_manager.stream = _stream
+    agent_manager.get_row = MagicMock(return_value=None)
+
+    gateway = MagicMock()
+    gateway.run_in_session = _run_locked
+    gateway.require_session = MagicMock(return_value=session)
+    gateway.push_session_text = AsyncMock()
+    gateway.notify_dashboard_push = AsyncMock()
+
+    repos = MagicMock()
+    repos.user_repo = UserRepo(db)
+    repos.thread_message_repo = ThreadMessageRepo(db)
+
+    service = CronDeliveryService(gateway=gateway, agent_manager=agent_manager, repos=repos)
+    with pytest.raises(RuntimeError, match="tool call failed"):
+        await service.deliver(
+            _command(task_type="agent", prompt="记得喝水", session_key=session.session_key)
+        )
+
+    gateway.push_session_text.assert_not_awaited()
+    page, _has_more = ThreadMessageRepo(db).page("thr_fail", limit=10)
+    assert [row.role for row in page] == ["human", "ai"]
+    assert "记得喝水" in page[0].message_json
+    assert "先查一下" in page[1].message_json
+    db.close()
+
+
+def _user_row(*, role: str, default_org_id: str | None) -> Any:
+    """Minimal user row shape consumed by resolve_authz_context."""
+    row = SimpleNamespace(
+        id=1,
+        role=role,
+        default_org_id=default_org_id,
+        sso_subject=None,
+    )
+    return row
+
+
+def _repos_with_user(*, role: str, default_org_id: str | None) -> MagicMock:
+    repos = MagicMock()
+    repos.user_repo.get.return_value = _user_row(role=role, default_org_id=default_org_id)
+    if default_org_id is not None:
+        membership = SimpleNamespace(status="active", role_keys=("member",))
+    else:
+        membership = SimpleNamespace(status="inactive", role_keys=())
+    repos.org_repo.get_membership.return_value = membership
+    return repos
+
+
+@pytest.mark.asyncio
+async def test_deliver_binds_owner_tenant_scope_for_the_turn() -> None:
+    """A scheduled turn must see the owner's tenant rows (RLS scope bound)."""
+    session = _session(channel_type="feishu")
+    seen_scopes: list[Any] = []
+
+    async def _stream(_aid: str, _request: dict):
+        seen_scopes.append(current_scope())
+        yield {"type": "token", "content": "ok"}
+
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    agent_manager.stream = _stream
+    agent_manager.get_row = MagicMock(return_value=None)
+
+    gateway = MagicMock()
+    gateway.run_in_session = _run_locked
+    gateway.require_session = MagicMock(return_value=session)
+    gateway.push_session_text = AsyncMock()
+
+    repos = _repos_with_user(role="user", default_org_id="org_t")
+    service = CronDeliveryService(gateway=gateway, agent_manager=agent_manager, repos=repos)
+    await service.deliver(_command(task_type="agent", prompt="run"))
+
+    assert seen_scopes == [TenantScope(org_id="org_t", bypass=False)]
+    # The bounded binding must not leak past the delivery.
+    assert current_scope() is None
+
+
+@pytest.mark.asyncio
+async def test_deliver_binds_admin_bypass_scope() -> None:
+    session = _session(channel_type="feishu")
+    seen_scopes: list[Any] = []
+
+    async def _stream(_aid: str, _request: dict):
+        seen_scopes.append(current_scope())
+        yield {"type": "token", "content": "ok"}
+
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    agent_manager.stream = _stream
+    agent_manager.get_row = MagicMock(return_value=None)
+
+    gateway = MagicMock()
+    gateway.run_in_session = _run_locked
+    gateway.require_session = MagicMock(return_value=session)
+    gateway.push_session_text = AsyncMock()
+
+    repos = _repos_with_user(role="admin", default_org_id=None)
+    service = CronDeliveryService(gateway=gateway, agent_manager=agent_manager, repos=repos)
+    await service.deliver(_command(task_type="agent", prompt="run"))
+
+    assert seen_scopes == [TenantScope(org_id=None, bypass=True)]
+    assert current_scope() is None
 
 
 @pytest.mark.asyncio

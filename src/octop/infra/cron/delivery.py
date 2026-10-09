@@ -66,25 +66,39 @@ class CronDeliveryService:
 
     async def deliver(self, command: CronDeliveryCommand) -> None:
         """Run one delivery under the target channel session lock."""
+        from octop.infra.users.context import authz_binding
 
-        async def _locked() -> None:
-            if command.fresh_thread:
-                await self._gateway.thread_registry.reset_by_session_key(command.session_key)
-            session = self._gateway.require_session(command.agent_id, command.session_key)
-            if session.user_id != command.user_id:
-                raise ValueError(
-                    f"session {command.session_key!r} does not belong to user {command.user_id!r}"
-                )
-            if command.task_type == "text":
-                await self._deliver_text(command, session)
-            else:
-                await self._deliver_agent(command, session)
+        # Turn-scoped RLS binding (T2-4): APScheduler tasks run outside any
+        # request scope, and the fail-closed tenant_isolation policies would
+        # hide the job owner's tenant rows (agents/connectors) — silently
+        # dropping the agent's default model, composer MCP picks and plugin
+        # overlay while the in-memory harness still ran the turn. Resolve the
+        # owner's authz and bind it for the whole delivery so a scheduled turn
+        # sees exactly what an interactive chat turn sees; unbind on exit so
+        # an admin's bypass never outlives this task context.
+        with authz_binding(self._repos.user_repo, self._repos.org_repo, command.user_id):
 
-        await self._gateway.run_in_session(
-            command.agent_id,
-            command.session_key,
-            _locked,
-        )
+            async def _locked() -> None:
+                if command.fresh_thread:
+                    await self._gateway.thread_registry.reset_by_session_key(
+                        command.session_key
+                    )
+                session = self._gateway.require_session(command.agent_id, command.session_key)
+                if session.user_id != command.user_id:
+                    raise ValueError(
+                        f"session {command.session_key!r} does not belong to "
+                        f"user {command.user_id!r}"
+                    )
+                if command.task_type == "text":
+                    await self._deliver_text(command, session)
+                else:
+                    await self._deliver_agent(command, session)
+
+            await self._gateway.run_in_session(
+                command.agent_id,
+                command.session_key,
+                _locked,
+            )
 
     async def _deliver_text(
         self,
