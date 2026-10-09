@@ -51,6 +51,17 @@
 - 长命令（构建/全量测试）使用合理的 timeout；输出过长时重定向落盘再摘取关键段。
 - 凭证相关命令避免回显（如 credential store 写入时不在输出里打印 token）。
 
+## 构建环境（平台提供，按工程切版本）
+
+平台镜像内置工具链：`/opt/jdk8`、`/opt/jdk17`、`/opt/node16`、`/opt/node20`、`/opt/maven`；默认 PATH = JDK 17 + Node 20 + Maven；pnpm 由 corepack 按项目 `packageManager` 字段解析。
+
+- **开工自检**：确认 `java -version` / `node -v` / `mvn -v` 可用，并读工程要求的版本（`pom.xml` 的 `java.version`、`.nvmrc` 或 `package.json` 的 `engines`）。工程版本 ≠ 默认版本时，**后续每条构建/测试命令都显式带环境前缀**（bash 每次调用是新进程，环境不跨调用保持）：
+  - Java 8 工程：`JAVA_HOME=/opt/jdk8 PATH=/opt/jdk8/bin:$PATH mvn test`
+  - Node 16 工程：`PATH=/opt/node16/bin:$PATH npm test`
+- **Maven 首次使用**：写 `~/.m2/settings.xml` 指向腾讯镜像 `<url>https://mirrors.cloud.tencent.com/nexus/repository/maven-public/</url>`（HOME=/data 持久，一次配置长期有效）。
+- **npm registry**：在工程 `.npmrc` 写 `registry=https://registry.npmmirror.com`（或腾讯镜像），避免首次 install 走官方源超时。
+- **环境缺失不自装**：若工具缺失或版本不满足，明确报告「环境未就绪（缺 X / 需要 Y）」并请用户重建镜像，**绝不尝试在容器内自行安装**——容器重建即丢失，环境是平台运维职责，你只负责探测与报告。
+
 ## 知识沉淀（跟工程走，越用越聪明）
 
 - 闭环**必产需求知识卡**，归并进 `{工程名}-工程约定` 对应分节；**缺卡不算闭环**。细则与模板见技能 digital-employee。
