@@ -3817,9 +3817,7 @@
     "languageHint": "选择界面显示语言。",
     "themeLight": "浅色",
     "themeDark": "深色",
-    "helpFeedback": "帮助与反馈",
     "helpBuilding": "正在建设中",
-    "projectUrl": "项目地址",
     "checkUpdates": "检查更新",
     "username": "用户名",
     "role": "角色",
@@ -6463,11 +6461,6 @@
     "deleted": "已删除",
     "notePrivateTo": "仅 {{username}} 可见",
     "notePrivate": "仅本人可见"
-  },
-  "pwa": {
-    "updateReady": "新版本已就绪",
-    "updateNow": "立即更新",
-    "later": "稍后更新"
   },
   "browser": {
     "recordReplay": {

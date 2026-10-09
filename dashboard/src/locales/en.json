@@ -3817,9 +3817,7 @@
     "languageHint": "Choose the console display language.",
     "themeLight": "Light",
     "themeDark": "Dark",
-    "helpFeedback": "Help & Feedback",
     "helpBuilding": "Under construction",
-    "projectUrl": "Project",
     "checkUpdates": "Check for Updates",
     "username": "Username",
     "role": "Role",
@@ -6463,11 +6461,6 @@
     "deleted": "Deleted",
     "notePrivateTo": "private to {{username}}",
     "notePrivate": "private"
-  },
-  "pwa": {
-    "updateReady": "A new version is ready",
-    "updateNow": "Update now",
-    "later": "Later"
   },
   "browser": {
     "recordReplay": {

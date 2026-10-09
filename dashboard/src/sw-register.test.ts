@@ -1,29 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-type FakeWorker = {
-  state: string;
-  postMessage: ReturnType<typeof vi.fn>;
-  addEventListener: (type: string, fn: () => void) => void;
-};
-
 function mockRegistration(opts: {
-  waiting?: FakeWorker | null;
-  installing?: FakeWorker | null;
   controller?: { scriptURL: string } | null;
 }) {
-  const registrationListeners = new Map<string, Array<() => void>>();
   const swListeners = new Map<string, Array<() => void>>();
   const registration = {
-    waiting: opts.waiting ?? null,
-    installing: opts.installing ?? null,
-    addEventListener: (type: string, fn: () => void) => {
-      const list = registrationListeners.get(type) ?? [];
-      list.push(fn);
-      registrationListeners.set(type, list);
-    },
-    emit: (type: string) => {
-      for (const fn of registrationListeners.get(type) ?? []) fn();
-    },
+    waiting: null,
+    installing: null,
+    addEventListener: vi.fn(),
     update: vi.fn(),
   };
   Object.defineProperty(navigator, "serviceWorker", {
@@ -60,56 +44,6 @@ describe("registerProductionSW", () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-  });
-
-  it("activates a waiting worker when the page is uncontrolled", async () => {
-    const waiting: FakeWorker = {
-      state: "installed",
-      postMessage: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    mockRegistration({ waiting, controller: null });
-
-    const { registerProductionSW } = await import("./sw-register");
-    await registerProductionSW();
-
-    expect(waiting.postMessage).toHaveBeenCalledWith({ type: "SKIP_WAITING" });
-    expect(navigator.serviceWorker.register).toHaveBeenCalledWith("/sw.js", {
-      scope: "/",
-      updateViaCache: "none",
-    });
-  });
-
-  it("prompts when a waiting worker exists and the page is controlled", async () => {
-    const waiting: FakeWorker = {
-      state: "installed",
-      postMessage: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    mockRegistration({
-      waiting,
-      controller: { scriptURL: "https://x/sw.js" },
-    });
-    const onReady = vi.fn();
-    window.addEventListener("pwa:update-ready", onReady);
-
-    const { registerProductionSW } = await import("./sw-register");
-    await registerProductionSW();
-
-    expect(waiting.postMessage).not.toHaveBeenCalled();
-    expect(onReady).toHaveBeenCalledOnce();
-  });
-});
-
-describe("applyUpdate", () => {
-  beforeEach(() => {
-    vi.resetModules();
-    vi.useFakeTimers();
     vi.stubGlobal("location", {
       ...window.location,
       reload: vi.fn(),
@@ -122,61 +56,66 @@ describe("applyUpdate", () => {
     vi.unstubAllGlobals();
   });
 
-  it("reloads immediately when no waiting worker is pending", async () => {
-    mockRegistration({ waiting: null, controller: null });
-    const { applyUpdate } = await import("./sw-register");
+  it("registers with updateViaCache none", async () => {
+    mockRegistration({ controller: { scriptURL: "https://x/sw.js" } });
 
-    await applyUpdate();
-
-    expect(window.location.reload).toHaveBeenCalledOnce();
-  });
-
-  it("waits for controllerchange before reloading", async () => {
-    const waiting: FakeWorker = {
-      state: "installed",
-      postMessage: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    mockRegistration({
-      waiting,
-      controller: { scriptURL: "https://x/sw.js" },
-    });
-
-    const { applyUpdate, registerProductionSW } = await import("./sw-register");
+    const { registerProductionSW } = await import("./sw-register");
     await registerProductionSW();
 
-    const pending = applyUpdate();
-    expect(waiting.postMessage).toHaveBeenCalledWith({ type: "SKIP_WAITING" });
-    expect(window.location.reload).not.toHaveBeenCalled();
+    expect(navigator.serviceWorker.register).toHaveBeenCalledWith("/sw.js", {
+      scope: "/",
+      updateViaCache: "none",
+    });
+  });
 
+  it("reloads once when an updated worker takes control of a controlled page", async () => {
+    mockRegistration({ controller: { scriptURL: "https://x/sw.js" } });
+
+    const { registerProductionSW } = await import("./sw-register");
+    await registerProductionSW();
+
+    // New worker activates (skipWaiting) and claims the page.
     (
       navigator.serviceWorker as unknown as { emit: (type: string) => void }
     ).emit("controllerchange");
-    await pending;
+    expect(window.location.reload).toHaveBeenCalledOnce();
 
+    // A stray second event must not reload again.
+    (
+      navigator.serviceWorker as unknown as { emit: (type: string) => void }
+    ).emit("controllerchange");
     expect(window.location.reload).toHaveBeenCalledOnce();
   });
 
-  it("reloads after timeout if controllerchange never fires", async () => {
-    const waiting: FakeWorker = {
-      state: "installed",
-      postMessage: vi.fn(),
-      addEventListener: vi.fn(),
-    };
-    mockRegistration({
-      waiting,
+  it("does not reload on first-time control (fresh visit / shift-reload)", async () => {
+    mockRegistration({ controller: null });
+
+    const { registerProductionSW } = await import("./sw-register");
+    await registerProductionSW();
+
+    // clientsClaim fires controllerchange on the very first takeover.
+    (
+      navigator.serviceWorker as unknown as { emit: (type: string) => void }
+    ).emit("controllerchange");
+    expect(window.location.reload).not.toHaveBeenCalled();
+  });
+
+  it("checks for updates hourly and when the tab becomes visible", async () => {
+    const registration = mockRegistration({
       controller: { scriptURL: "https://x/sw.js" },
     });
 
-    const { applyUpdate, registerProductionSW } = await import("./sw-register");
+    const { registerProductionSW } = await import("./sw-register");
     await registerProductionSW();
 
-    const pending = applyUpdate();
-    expect(window.location.reload).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(registration.update).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(3000);
-    await pending;
-
-    expect(window.location.reload).toHaveBeenCalledOnce();
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      value: "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(registration.update).toHaveBeenCalledTimes(2);
   });
 });

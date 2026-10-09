@@ -34,17 +34,13 @@ describe("sidebarNavLayout", () => {
     const sections = catalog();
     expect(sectionsFromLayout(sections, null)).toBe(sections);
     const editor = editorFromCatalog(sections, null);
-    expect(editor.ungrouped).toEqual([
-      "chat",
-      "experts",
-      "tasks",
-      "token-usage",
-    ]);
+    expect(editor.ungrouped).toEqual(["chat", "experts", "tasks"]);
     expect(editor.groups.map((group) => group.id)).toEqual([
       "settings",
       "control",
       "admin",
     ]);
+    expect(editor.itemsByGroup.settings).toContain("token-usage");
     expect(editor.hidden).toEqual([]);
   });
 

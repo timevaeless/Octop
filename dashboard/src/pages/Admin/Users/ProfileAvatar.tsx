@@ -24,6 +24,7 @@ import { useTranslation } from "react-i18next";
 import { message } from "@/utils/antdMessage";
 import { request, requestUpload } from "../../../api/request";
 import { useAuthImageSrc } from "../../../hooks/useAuthImageSrc";
+import cherryAvatar from "../../../assets/users/cherry.png";
 import { validateAvatarFile } from "../../Experts/components/ExpertAvatarPicker";
 import styles from "./index.module.less";
 
@@ -37,6 +38,8 @@ interface AvatarPreset {
   bg: string;
   fg: string;
   Icon: LucideIcon;
+  /** When set, the preset renders this image instead of the Lucide icon. */
+  img?: string;
 }
 
 const USER_PRESETS: AvatarPreset[] = [
@@ -46,6 +49,7 @@ const USER_PRESETS: AvatarPreset[] = [
     bg: "#e8f1ff",
     fg: "#175cd3",
     Icon: UserRound,
+    img: cherryAvatar,
   },
   {
     id: "business",
@@ -217,7 +221,13 @@ export function ProfileAvatar({
     : undefined;
   return (
     <span className={className} style={style}>
-      {photo ? <img src={src} alt="" /> : <preset.Icon />}
+      {photo ? (
+        <img src={src} alt="" />
+      ) : preset.img ? (
+        <img src={preset.img} alt="" draggable={false} />
+      ) : (
+        <preset.Icon />
+      )}
     </span>
   );
 }
@@ -365,7 +375,17 @@ export function ProfileAvatarPicker({
                 ).catch(() => undefined);
               }}
             >
-              <preset.Icon size={18} />
+              {preset.img ? (
+                <img
+                  src={preset.img}
+                  alt=""
+                  width={18}
+                  height={18}
+                  draggable={false}
+                />
+              ) : (
+                <preset.Icon size={18} />
+              )}
             </button>
           );
         })}

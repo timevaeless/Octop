@@ -154,6 +154,9 @@ export const SIDEBAR_GROUPED_NAV_KEYS = [
   "admin-security",
   "admin-advanced",
   "agent-config",
+  // Lives in the settings pane by default (not in the primary chat rail).
+  // Still a normal catalog entry — the nav customizer can move it anywhere.
+  "token-usage",
 ] as const;
 
 const GROUPED_NAV_KEY_SET = new Set<string>(SIDEBAR_GROUPED_NAV_KEYS);
@@ -186,12 +189,6 @@ export function buildNavSections(
           path: "/tasks",
           icon: <Timer size={iconSize} strokeWidth={iconStroke} />,
           labelKey: "nav.tasks",
-        },
-        {
-          key: "token-usage",
-          path: "/token-usage",
-          icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.tokenUsage",
         },
       ],
     },
@@ -244,6 +241,14 @@ export function buildNavSections(
     icon: <Cloudy size={iconSize} strokeWidth={iconStroke} />,
     labelKey: "nav.bridge",
     badge: "Beta",
+  });
+  // Token stats: settings pane by default, not the primary chat rail. Still
+  // customizable from the nav editor (drag it back to the front).
+  settingsItems.push({
+    key: "token-usage",
+    path: "/token-usage",
+    icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
+    labelKey: "nav.tokenUsage",
   });
   if (settingsItems.length > 0) {
     sections.push({

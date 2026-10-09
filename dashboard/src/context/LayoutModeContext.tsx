@@ -8,9 +8,7 @@ import {
 } from "react";
 import {
   loadLayoutMode,
-  loadMinimalNavPane,
   saveLayoutMode,
-  saveMinimalNavPane,
   type LayoutMode,
   type MinimalNavPane,
 } from "../layouts/layoutModeStorage";
@@ -26,7 +24,7 @@ interface LayoutModeContextValue {
 const LayoutModeContext = createContext<LayoutModeContextValue>({
   layoutMode: "minimal",
   setLayoutMode: () => {},
-  minimalPane: "settings",
+  minimalPane: "records",
   setMinimalPane: () => {},
 });
 
@@ -34,9 +32,10 @@ export function LayoutModeProvider({ children }: { children: ReactNode }) {
   const [layoutMode, setLayoutModeState] = useState<LayoutMode>(() =>
     loadLayoutMode(),
   );
-  const [minimalPane, setMinimalPaneState] = useState<MinimalNavPane>(() =>
-    loadMinimalNavPane(),
-  );
+  // Session-only: the pane always starts at records (tasks) on a fresh load,
+  // so switching to settings never survives a refresh.
+  const [minimalPane, setMinimalPaneState] =
+    useState<MinimalNavPane>("records");
 
   const setLayoutMode = useCallback((mode: LayoutMode) => {
     setLayoutModeState(mode);
@@ -45,7 +44,6 @@ export function LayoutModeProvider({ children }: { children: ReactNode }) {
 
   const setMinimalPane = useCallback((pane: MinimalNavPane) => {
     setMinimalPaneState(pane);
-    saveMinimalNavPane(pane);
   }, []);
 
   const value = useMemo(
