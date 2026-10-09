@@ -1,6 +1,7 @@
 import { memo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { App, Dropdown } from "antd";
+import type { MenuInfo } from "rc-menu/lib/interface";
+import { App, Dropdown, type MenuProps } from "antd";
 import { MoreHorizontal } from "lucide-react";
 import { ExpertIcon } from "./iconForName";
 import {
@@ -13,6 +14,7 @@ import styles from "../index.module.less";
 interface PublishedExpertCardProps {
   expert: PublishedExpert;
   canManage: boolean;
+  canUpgrade?: boolean;
   onInstall: (expert: PublishedExpert) => void;
   onChanged: () => void;
 }
@@ -20,6 +22,7 @@ interface PublishedExpertCardProps {
 export const PublishedExpertCard = memo(function PublishedExpertCard({
   expert,
   canManage,
+  canUpgrade = false,
   onInstall,
   onChanged,
 }: PublishedExpertCardProps) {
@@ -51,6 +54,70 @@ export const PublishedExpertCard = memo(function PublishedExpertCard({
     });
   };
 
+  const confirmUpgrade = () => {
+    modal.confirm({
+      title: t("experts.published.upgradeConfirm"),
+      okText: t("experts.published.upgrade"),
+      cancelText: t("common.cancel"),
+      onOk: async () => {
+        setLoading(true);
+        try {
+          const report = await publishedExpertsApi.upgradeInstances(expert.id);
+          if (report.env_disabled) {
+            message.info(t("experts.published.upgradeDisabled"));
+          } else if (report.touched_instances > 0) {
+            const conflicts = report.instances.reduce(
+              (sum, item) => sum + item.conflicts.length,
+              0,
+            );
+            message.success(
+              conflicts > 0
+                ? t("experts.published.upgradeSuccessWithConflicts", {
+                    instances: report.touched_instances,
+                    conflicts,
+                  })
+                : t("experts.published.upgradeSuccess", {
+                    instances: report.touched_instances,
+                  }),
+            );
+          } else {
+            message.info(t("experts.published.upgradeNoChange"));
+          }
+        } catch (err) {
+          message.error(
+            apiErrorMessage(err, t("experts.published.upgradeFailed"), t),
+          );
+        } finally {
+          setLoading(false);
+        }
+      },
+    });
+  };
+
+  const menuItems: MenuProps["items"] = [
+    ...(canUpgrade
+      ? [
+          {
+            key: "upgrade",
+            label: t("experts.published.upgrade"),
+            onClick: ({ domEvent }: MenuInfo) => {
+              domEvent.stopPropagation();
+              confirmUpgrade();
+            },
+          },
+        ]
+      : []),
+    {
+      key: "unpublish",
+      danger: true,
+      label: t("experts.published.unpublish"),
+      onClick: ({ domEvent }: MenuInfo) => {
+        domEvent.stopPropagation();
+        confirmUnpublish();
+      },
+    },
+  ];
+
   return (
     <div
       className={styles.expertTemplateCard}
@@ -76,19 +143,7 @@ export const PublishedExpertCard = memo(function PublishedExpertCard({
         </div>
         {canManage && (
           <Dropdown
-            menu={{
-              items: [
-                {
-                  key: "unpublish",
-                  danger: true,
-                  label: t("experts.published.unpublish"),
-                  onClick: ({ domEvent }) => {
-                    domEvent.stopPropagation();
-                    confirmUnpublish();
-                  },
-                },
-              ],
-            }}
+            menu={{ items: menuItems }}
             trigger={["click"]}
             disabled={loading}
           >

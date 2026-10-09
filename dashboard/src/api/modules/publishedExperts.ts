@@ -35,6 +35,22 @@ export interface PublishExpertBody {
 
 export type RefreshPublishedExpertBody = PublishExpertBody;
 
+export interface PublishedExpertUpgradeInstanceReport {
+  agent_id: string;
+  name: string;
+  synced: string[];
+  added: string[];
+  unchanged: string[];
+  conflicts: string[];
+}
+
+export interface PublishedExpertUpgradeReport {
+  expert_id: string;
+  env_disabled?: boolean;
+  instances: PublishedExpertUpgradeInstanceReport[];
+  touched_instances: number;
+}
+
 export interface InstallPublishedExpertBody {
   name: string;
   description?: string;
@@ -105,6 +121,12 @@ export const publishedExpertsApi = {
 
   unpublish: (expertId: string) =>
     request<void>(publishedPath(expertId), { method: "DELETE" }),
+
+  upgradeInstances: (expertId: string) =>
+    request<PublishedExpertUpgradeReport>(
+      `${publishedPath(expertId)}/upgrade-instances`,
+      { method: "POST" },
+    ),
 
   install: (expertId: string, body: InstallPublishedExpertBody) =>
     request<InstalledPublishedExpert>(`${publishedPath(expertId)}/install`, {

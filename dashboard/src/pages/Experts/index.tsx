@@ -744,6 +744,7 @@ export default function ExpertsPage() {
                     key={expert.id}
                     expert={expert}
                     canManage={canManagePublished(expert)}
+                    canUpgrade={canManagePublished(expert)}
                     onInstall={(item) =>
                       setCreateSource({ kind: "published", expert: item })
                     }

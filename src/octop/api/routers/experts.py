@@ -660,6 +660,55 @@ async def refresh_published_expert(
     return _published_summary_dict(updated, server)
 
 
+@router.post(
+    "/experts/published/{expert_id}/upgrade-instances",
+    summary="Propagate template updates into installed instances (admin or publisher)",
+)
+async def upgrade_published_expert_instances(
+    expert_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Manually sync authoritative template files into installed instances.
+
+    Pluggable upgrade propagation (octop.infra.agents.expert_upgrade):
+    conservative — owner-modified files are skipped and reported, private
+    workspace content is never written. Delete this endpoint together with
+    the module to restore upstream behaviour.
+    """
+    assert server.services is not None
+    row = server.services.published_expert_repo.get(expert_id)
+    if row is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "published expert not found")
+    # Admin or the template's own publisher (2026-10-09 relaxation, mirrors
+    # the ownership convention in skill_package_store).
+    if not (bool(getattr(user, "is_admin", False)) or str(user.id) == row.created_by):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin or publisher only")
+    # Lazy hook (pluggable module): keep the router import surface clean.
+    from octop.infra.agents.expert_upgrade import upgrade_for_expert_id
+
+    report = await upgrade_for_expert_id(server, expert_id)
+    return report.as_dict()
+
+
+@router.post(
+    "/experts/library/{template_name}/upgrade-instances",
+    summary="Propagate library template updates into installed instances (admin)",
+)
+async def upgrade_library_expert_instances(
+    template_name: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Manually sync expert-library template files into installed instances."""
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    from octop.infra.agents.expert_upgrade import upgrade_for_template_name
+
+    report = await upgrade_for_template_name(server, template_name)
+    return report.as_dict()
+
+
 @router.delete(
     "/experts/published/{expert_id}",
     status_code=204,

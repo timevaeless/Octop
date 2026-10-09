@@ -71,4 +71,15 @@ describe("publishedExpertsApi", () => {
       },
     );
   });
+
+  it("posts upgrade-instances for a published template", () => {
+    publishedExpertsApi.upgradeInstances("expert-1");
+
+    expect(request).toHaveBeenCalledWith(
+      "/experts/published/expert-1/upgrade-instances",
+      {
+        method: "POST",
+      },
+    );
+  });
 });
