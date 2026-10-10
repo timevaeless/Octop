@@ -573,6 +573,11 @@ class OctopServer:
             history_archive=history_archive,
             bridge_manager=bridge_mgr,
         )
+
+        # T4 hook (ocr bundled plugin): expose the KB OCR chain as an agent tool.
+        from octop.infra.agents.plugins.ocr_bridge import bind_ocr_server  # noqa: PLC0415
+
+        bind_ocr_server(self)
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
         resume_pending_index_jobs(self.services)

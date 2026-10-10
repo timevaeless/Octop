@@ -1,0 +1,10 @@
+id: ocr
+version: 0.1.0
+name: OCR 文字识别
+description: 识别工作区图片与扫描 PDF 中的文字（引擎跟随知识库 OCR 配置）
+icon: icon.svg
+group: tools
+kind: tool
+entry: main.py
+requires:
+  - pymupdf>=1.24
