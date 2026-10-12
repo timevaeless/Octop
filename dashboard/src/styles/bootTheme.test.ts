@@ -78,12 +78,27 @@ describe("index.html boot theme", () => {
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
   });
 
-  it("follows the OS when preference is system or missing", () => {
+  it("defaults to light when storage is empty, even if OS is dark", () => {
+    eval(bootThemeScript());
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("follows the OS only when preference is explicitly system", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({ preference: "system", palette: "rose" }),
+    );
     eval(bootThemeScript());
     expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
 
     document.documentElement.removeAttribute("data-theme");
     stubMatchMedia(false);
+    eval(bootThemeScript());
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+  });
+
+  it("defaults to light on corrupt storage instead of OS dark", () => {
+    localStorage.setItem(THEME_STORAGE_KEY, "{not-json");
     eval(bootThemeScript());
     expect(document.documentElement.getAttribute("data-theme")).toBe("light");
   });

@@ -35,6 +35,8 @@
       the splash CSS keys off html[data-theme], not prefers-color-scheme,
       so a stored "light" preference wins over an OS dark setting.
       Storage shape matches appearanceStorage.ts (THEME_STORAGE_KEY = "theme").
+      Default (no / invalid storage) is "light"; an explicit stored "system"
+      preference still follows the OS.
     -->
     <script id="octop-boot-theme">
       (function () {
@@ -62,7 +64,7 @@
         }
         try {
           var raw = localStorage.getItem(KEY);
-          var pref = "system";
+          var pref = "light";
           if (raw === "light" || raw === "dark" || raw === "system") {
             pref = raw;
           } else if (raw) {
@@ -85,7 +87,7 @@
             mode = "dark";
           }
         } catch (e) {
-          if (systemDark()) mode = "dark";
+          // Corrupt storage: default to light, mirroring appearanceStorage.ts.
         }
         document.documentElement.setAttribute("data-theme", mode);
         document.documentElement.setAttribute("data-palette", palette);

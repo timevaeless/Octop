@@ -46,7 +46,7 @@ export function readStoredAppearance(): StoredAppearance {
   const raw = localStorage.getItem(THEME_STORAGE_KEY);
   if (!raw) {
     return {
-      preference: "system",
+      preference: "light",
       palette: readLegacyPalette(),
       customColor: DEFAULT_CUSTOM_COLOR,
     };
@@ -67,7 +67,7 @@ export function readStoredAppearance(): StoredAppearance {
       const obj = parsed as Record<string, unknown>;
       const preference = isPreference(obj.preference)
         ? obj.preference
-        : "system";
+        : "light";
       const palette = isPalette(obj.palette)
         ? obj.palette
         : readLegacyPalette();
@@ -80,7 +80,7 @@ export function readStoredAppearance(): StoredAppearance {
   }
 
   return {
-    preference: "system",
+    preference: "light",
     palette: readLegacyPalette(),
     customColor: DEFAULT_CUSTOM_COLOR,
   };
