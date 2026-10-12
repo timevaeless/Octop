@@ -13,6 +13,8 @@ interface CurrentVersionBadgeProps {
 export default function CurrentVersionBadge({
   isMobile,
 }: CurrentVersionBadgeProps) {
+  // 奇宝品牌化期间隐藏侧边栏/顶栏的版本号徽标；恢复时删除此行即可。
+  return null;
   const { t } = useTranslation();
   const navigate = useNavigate();
   const user = useCurrentUser();
