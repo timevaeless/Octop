@@ -638,6 +638,12 @@ class ConnectorService:
                 text = str(name).strip()
                 if text and text in allowed and text not in defaults:
                     defaults.append(text)
+            # T4 hook (mount_health): expert picks dropped above are dead
+            # keys — observe them here or they vanish before any failure
+            # report can mention them.
+            from octop.infra.agents.mount_health import note_dropped_turn_picks  # noqa: PLC0415
+
+            note_dropped_turn_picks(user_id, extra_defaults, allowed)
         return merge_mcp_servers_with_defaults(
             explicit,
             defaults,

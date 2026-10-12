@@ -3039,6 +3039,12 @@ class AgentManager:
                 return
             if self._harness_manager.shared_factory is None:
                 return
+            # T4 hook (mount_health): reload-time dead-mount-key probe.
+            from octop.infra.agents.mount_health import audit_agent_mounts  # noqa: PLC0415
+
+            audit_agent_mounts(
+                agent_id, row, connector_svc=self._connector_svc, agent_repo=self._repos.agent_repo
+            )
             try:
                 cfg, metadata, tags, user_display = self._agent_runtime_bundle(row)
                 entry = await self._harness_manager.arebuild_agent(
