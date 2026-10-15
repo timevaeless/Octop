@@ -258,10 +258,18 @@ async def prepare_dashboard_turn(
             remaining = [n for n in mcp_servers if n not in failed]
             if not remaining:
                 locale = getattr(user, "locale", None) or "zh"
+                # Attach the hub's rejection reason (e.g. tool-ACL deny-all)
+                # so the frontend error card shows *why*, not just the name.
+                reasons = server.app_runtime.agent_registry.mcp_load_failure_reasons(
+                    agent_id, failed
+                )
+                servers = ", ".join(
+                    f"{n}（{reasons[n]}）" if reasons.get(n) else n for n in failed
+                )
                 raise OctopError.localized(
                     ErrorCode.CONNECTOR_MCP_LOAD_FAILED,
                     locale,
-                    servers=", ".join(failed),
+                    servers=servers,
                 )
             logger.warning(
                 "dashboard turn MCP degraded agent=%s user=%s: failed=%s loaded=%s",

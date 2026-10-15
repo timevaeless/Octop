@@ -414,6 +414,12 @@ class AgentManager:
         )
 
         apply_harness_args_schema_patch()
+        # Pluggable runtime patch: harness aload_mcp_tools swallows per-server
+        # load exceptions, so the hub's rejection reason (e.g. tool-ACL
+        # deny-all) never reaches the frontend. Record-then-reraise wrapper.
+        from octop.infra.connectors.mcp_load_errors import install as install_mcp_load_errors  # noqa: PLC0415
+
+        install_mcp_load_errors()
         self.memory_slim = MemorySlimCoordinator(self)
         self._lock = asyncio.Lock()
         # Serialize start/reload per agent so parallel provider reloads cannot
@@ -1742,6 +1748,22 @@ class AgentManager:
         if row is None:
             return []
         return id_list_from_row(row, "knowledge_base_ids")
+
+    def mcp_load_failure_reasons(self, agent_id: str, servers: list[str]) -> dict[str, str]:
+        """Recent per-server MCP load failure reasons (hub rejection details).
+
+        Recorded by ``octop.infra.connectors.mcp_load_errors`` when the harness
+        load raises; consumed by the turn raise sites so the frontend error
+        card can show *why* a server was rejected instead of just its name.
+        """
+        from octop.infra.connectors.mcp_load_errors import recorded_reason  # noqa: PLC0415
+
+        out: dict[str, str] = {}
+        for name in servers:
+            reason = recorded_reason(name)
+            if reason:
+                out[name] = reason
+        return out
 
     async def prepare_chat_mcp(
         self,

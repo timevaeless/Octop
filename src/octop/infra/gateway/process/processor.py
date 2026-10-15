@@ -1611,7 +1611,13 @@ class GlobalProcessor:
                 loaded,
             )
             if not loaded:
-                detail = f"mcp load failed: {', '.join(failed)}"
+                # Attach the hub's rejection reason (e.g. tool-ACL deny-all)
+                # recorded by octop.infra.connectors.mcp_load_errors.
+                reasons = self._agent_manager.mcp_load_failure_reasons(agent_id, failed)
+                servers = ", ".join(
+                    f"{n}（{reasons[n]}）" if reasons.get(n) else n for n in failed
+                )
+                detail = f"mcp load failed: {servers}"
                 if raise_on_failure:
                     raise OctopError(ErrorCode.CONNECTOR_MCP_LOAD_FAILED, detail)
                 return None
