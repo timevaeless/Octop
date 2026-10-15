@@ -77,13 +77,19 @@ export interface McpPublishDiff {
 export interface McpPublishResult {
   dry_run: boolean;
   acl: Record<string, string[]>;
-  ingress: string;
-  resources: string[];
+  /** v3 Console 通道：一条路由 + 路由级插件实例（不再有 ingress YAML）。 */
+  route: {
+    name: string;
+    path: string;
+    service: { name: string; port: number };
+    action: string | null;
+  };
+  plugins: Record<string, string>;
 }
 
 export interface McpUnpublishResult {
   dry_run: boolean;
-  written: string[];
+  written: boolean;
 }
 
 /** One Higress mcpbridge registry — the "服务来源" dropdown, live-read (v2). */

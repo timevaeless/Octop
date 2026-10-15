@@ -15,8 +15,9 @@ export interface PublishResultModalProps {
 }
 
 /**
- * 发布回执：把 ACL 投影、ingress YAML、下发资源三块结果读成「一眼能核对的凭据」，
+ * 发布回执：把 ACL 投影、网关路由、插件实例三块结果读成「一眼能核对的凭据」，
  * 而不是一坨裸文本。footer 只有一个「完成」——这是终点，没有二次动作。
+ * v3（Console 通道）：路由=RouteSpec 摘要（不再是 ingress YAML），插件=路由级实例。
  */
 export default function PublishResultModal({
   open,
@@ -35,8 +36,16 @@ export default function PublishResultModal({
   );
 
   const aclEntries = Object.entries(result?.acl ?? {});
-  const resources = result?.resources ?? [];
-  const ingress = result?.ingress ?? "";
+  const plugins = Object.entries(result?.plugins ?? {});
+  const route = result?.route;
+  const routeSummary = route
+    ? [
+        `route: ${route.name}`,
+        `path: ${route.path}`,
+        `service: ${route.service.name}:${route.service.port}`,
+        `action: ${route.action ?? "-"}`,
+      ].join("\n")
+    : "";
 
   return (
     <Modal
@@ -93,45 +102,45 @@ export default function PublishResultModal({
         <section className={styles.resultSection}>
           <div className={styles.resultSectionHead}>
             <span className={styles.resultSectionTitle}>
-              {t("mcpCatalog.ingressTitle")}
+              {t("mcpCatalog.routeTitle")}
             </span>
-            {ingress ? (
-              <Tooltip title={t("mcpCatalog.copyYaml")}>
+            {routeSummary ? (
+              <Tooltip title={t("mcpCatalog.copyRoute")}>
                 <button
                   type="button"
                   className={styles.copyBtn}
-                  onClick={() => void copy(ingress)}
+                  onClick={() => void copy(routeSummary)}
                 >
                   <Copy size={12} />
                 </button>
               </Tooltip>
             ) : null}
           </div>
-          {ingress ? (
-            <pre className={styles.yamlBlock}>{ingress}</pre>
+          {routeSummary ? (
+            <pre className={styles.yamlBlock}>{routeSummary}</pre>
           ) : (
             <div className={styles.resultEmpty}>
-              {t("mcpCatalog.noIngress")}
+              {t("mcpCatalog.routeEmpty")}
             </div>
           )}
         </section>
 
-        {resources.length > 0 ? (
+        {plugins.length > 0 ? (
           <section className={styles.resultSection}>
             <div className={styles.resultSectionHead}>
               <span className={styles.resultSectionTitle}>
-                {t("mcpCatalog.resourcesTitle")}
+                {t("mcpCatalog.pluginsTitle")}
               </span>
               <span className={styles.resultCount}>
-                {t("mcpCatalog.resultResourceCount", {
-                  count: resources.length,
+                {t("mcpCatalog.resultPluginCount", {
+                  count: plugins.length,
                 })}
               </span>
             </div>
             <div className={styles.diffChips}>
-              {resources.map((r) => (
-                <code key={r} className={styles.diffChip}>
-                  {r}
+              {plugins.map(([plugin, action]) => (
+                <code key={plugin} className={styles.diffChip}>
+                  {plugin} → {action}
                 </code>
               ))}
             </div>

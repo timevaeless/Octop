@@ -26,6 +26,7 @@ from octop.infra.users.resource_acl import PLATFORM_SHARED_ORG
 from octop.mcp_catalog import naming as naming_mod
 from octop.mcp_catalog import openapi_import
 from octop.mcp_catalog import sources as sources_mod
+from octop.mcp_catalog.gateway_client import GatewayClientError, gateway_client_from_env
 from octop.mcp_catalog.nacos_client import NacosConfigClient, NacosConfigError
 from octop.mcp_catalog.publisher import (
     CatalogPublisher,
@@ -79,7 +80,10 @@ def _repo(server: Any) -> CatalogRepo:
 
 
 def _publisher() -> CatalogPublisher:
-    return CatalogPublisher(NacosConfigClient(_NACOS_ADDR, *_nacos_creds()))
+    """网关配置走 Console 通道；nacos 客户端仅承载 mcp-hub ACL 分发通道."""
+    return CatalogPublisher(
+        gateway_client_from_env(), NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
+    )
 
 
 @contextlib.contextmanager
@@ -530,10 +534,9 @@ def _check_registry_live(fields: dict[str, Any]) -> None:
     name = fields.get("registry_name")
     if not name or name == "nacos":
         return
-    client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
     try:
-        resolve_registry(client, str(name))
-    except NacosConfigError as e:
+        resolve_registry(gateway_client_from_env(), str(name))
+    except GatewayClientError as e:
         raise HTTPException(
             status_code=502, detail=f"cannot verify registry '{name}': {e}"
         ) from e
@@ -553,21 +556,20 @@ def list_sources(_: Any = Depends(require_admin())) -> dict[str, Any]:
     shown tagged 「实验」 and the publisher refuses to publish it.
     """
     try:
-        sources = sources_mod.list_bridge_sources(_NACOS_ADDR, *_nacos_creds())
-    except NacosConfigError as e:
+        sources = sources_mod.list_service_sources(gateway_client_from_env())
+    except GatewayClientError as e:
         raise HTTPException(status_code=502, detail=f"higress sources unavailable: {e}") from e
     except ValueError as e:
-        raise HTTPException(status_code=502, detail=f"mcpbridges.default malformed: {e}") from e
+        raise HTTPException(status_code=502, detail=f"service sources malformed: {e}") from e
     for s in sources:
         s["verified"] = registry_is_verified(str(s.get("type") or ""))
     return {"sources": sources}
 
 
 def _registry_entry_or_error(registry_name: str) -> dict[str, Any]:
-    client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
     try:
-        return resolve_registry(client, registry_name)
-    except NacosConfigError as e:
+        return resolve_registry(gateway_client_from_env(), registry_name)
+    except GatewayClientError as e:
         raise HTTPException(
             status_code=502, detail=f"cannot resolve registry '{registry_name}': {e}"
         ) from e
@@ -1056,9 +1058,10 @@ def publish_diff(
     backstop for dropping nacos3's version tree (design §4.2).
 
     Desired side = the DB (enabled tools rendered by ``build_plugin_tool``,
-    the exact function publish uses). Live side = the wasmplugins.mcp-server
-    rule for this service's ingress read from nacos. Compared canonically
-    (sort_keys JSON), so the diff is exactly what publish would change.
+    the exact function publish uses). Live side = the route-scoped
+    mcp-server plugin instance's ``configurations`` read from the Console.
+    Compared canonically (sort_keys JSON), so the diff is exactly what
+    publish would change.
     """
     repo = _repo(server)
     svc = _service_or_404(repo, service_id)
@@ -1067,26 +1070,19 @@ def publish_diff(
     }
     live_tools: dict[str, dict[str, Any]] = {}
     published = False
-    client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
     try:
-        raw = client.get_config("wasmplugins.mcp-server")
-    except NacosConfigError as e:
+        configurations = gateway_client_from_env().get_route_plugin(
+            svc.ingress_name, "mcp-server"
+        )
+    except GatewayClientError as e:
         raise HTTPException(
             status_code=502, detail=f"cannot read live plugin config: {e}"
         ) from e
-    if raw is not None:
-        try:
-            cfg = json.loads(raw)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=502, detail=f"live plugin config is not valid JSON: {e}"
-            ) from e
-        for rule in (cfg.get("spec") or {}).get("matchRules") or []:
-            if svc.ingress_name in (rule.get("ingress") or []):
-                published = True
-                for entry in (rule.get("config") or {}).get("tools") or []:
-                    if isinstance(entry, dict) and entry.get("name"):
-                        live_tools[str(entry["name"])] = entry
+    if configurations:
+        published = True
+        for entry in (configurations or {}).get("tools") or []:
+            if isinstance(entry, dict) and entry.get("name"):
+                live_tools[str(entry["name"])] = entry
     def canon(d):
         return json.dumps(d, sort_keys=True, ensure_ascii=False)
     added = sorted(n for n in desired if n not in live_tools)
@@ -1184,8 +1180,8 @@ def publish_service(
     return {
         "dry_run": body.dry_run,
         "acl": detail["acl"],
-        "ingress": detail["ingress"]["content"],
-        "resources": [detail[k]["dataId"] for k in ("ingress", "mcp_server", "ext_auth")],
+        "route": detail["route"],
+        "plugins": detail["plugins"],
     }
 
 
@@ -1263,9 +1259,10 @@ def reconcile_service(
 ) -> dict[str, Any]:
     """Re-derive every gateway config from the DB and push it (review 2.8).
 
-    Recovers a half-published state (a crashed publish wrote some dataIds but
-    not all): the merge functions are idempotent, so re-pushing the expected
-    state converges. Status is not touched.
+    Recovers a half-published state (a crashed publish left a route with
+    partial plugin instances): every write is an idempotent object PUT
+    (route upsert, instance replace), so re-pushing the expected state
+    converges. Status is not touched.
     """
     repo = _repo(server)
     svc = _service_or_404(repo, service_id)

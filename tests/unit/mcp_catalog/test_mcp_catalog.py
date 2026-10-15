@@ -21,12 +21,11 @@ from octop.infra.db.pool import SqlitePool
 from octop.mcp_catalog.models import McpServiceRow
 from octop.mcp_catalog.nacos_client import NacosConfigError
 from octop.mcp_catalog.openapi_import import import_openapi
+from octop.mcp_catalog.gateway_client import GatewayClientError
 from octop.mcp_catalog.publisher import (
-    build_ingress_yaml,
+    CatalogPublisher,
     build_plugin_tool,
     collect_acl_map,
-    merge_ext_auth_rule,
-    merge_plugin_rule,
 )
 from octop.mcp_catalog.repo import CatalogRepo
 
@@ -575,11 +574,22 @@ def _tool_row(name="list_cmc_banks", roles=("cheryfs",), enabled=True, **over) -
     return McpToolRow(**fields)
 
 
-def test_ingress_yaml_shape():
-    yaml_text = build_ingress_yaml(_service_row())
-    assert "name: summer-cmc-mcp" in yaml_text
-    assert "higress.io/destination: summer-cmc.DEFAULT-GROUP.local.nacos:48088" in yaml_text
-    assert "path: /api/internal/mcp/summer-cmc" in yaml_text
+def test_route_spec_shape_from_service_row():
+    """v3（Console 通道）：路由形状 = RouteSpec.to_request() —— destination
+    去 ':port' 即 Console 服务名（实测三型统一），路由名=mcp_path 前缀。"""
+    from octop.mcp_catalog.gateway_client import RouteSpec, split_destination
+
+    svc = _service_row()
+    name, port = split_destination(svc.gateway_destination())
+    spec = RouteSpec(
+        name=svc.ingress_name, path=svc.resolved_mcp_path, service_name=name, service_port=port
+    )
+    body = spec.to_request()
+    assert body["name"] == "summer-cmc-mcp"
+    assert body["path"] == {"matchType": "PRE", "matchValue": "/api/internal/mcp/summer-cmc"}
+    assert body["services"] == [
+        {"name": "summer-cmc.DEFAULT-GROUP.local.nacos", "port": 48088, "weight": 100}
+    ]
 
 
 def test_plugin_tool_url_is_relative_and_top_level_tools():
@@ -588,59 +598,127 @@ def test_plugin_tool_url_is_relative_and_top_level_tools():
     assert tool["requestTemplate"]["method"] == "POST"
 
 
-def test_merge_plugin_rule_creates_and_updates():
-    plugin = {
-        "spec": {
-            "matchRules": [
-                {
-                    "ingress": ["octop-pilot-mcp"],
-                    "config": {
-                        "server": {"name": "octop-pilot"},
-                        "tools": [{"name": "check_octop_health"}],
-                    },
-                }
-            ]
-        }
-    }
+def test_console_unknown_route_400_is_translated_to_not_found():
+    """线上事故回归（2026-10-15）：Console 对**不存在路由**的实例端点返回
+    400 ValidationException("Unknown route") 而非 404（console 2.2.4 实测）。
+    服务下线（路由已删）后再上线的活体读取/摘除曾因此伪装成服务端故障抛
+    502——必须译为 GatewayNotFound 语义让调用方的容忍逻辑生效。"""
+    import httpx as _httpx
+
+    from octop.mcp_catalog.gateway_client import GatewayNotFound, HigressConsoleClient
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        if request.url.path == "/session/login":
+            return _httpx.Response(201, json={"success": True})
+        if "plugin-instances" in request.url.path:
+            # 逐字复刻线上响应（用户报错原文）
+            return _httpx.Response(
+                400,
+                json={
+                    "success": False,
+                    "message": "com.alibaba.higress.sdk.exception.ValidationException: "
+                    f"Unknown route: {request.url.path.split('/')[3]}",
+                    "data": None,
+                },
+            )
+        return _httpx.Response(404, json={"success": False, "message": "not found"})
+
+    client = HigressConsoleClient(
+        "http://console.test", "admin", "pw", transport=_httpx.MockTransport(handler)
+    )
+    # 活体读取（publish_diff）：路由不存在 → None（published=False 全 added 分支）
+    assert client.get_route_plugin("summer-laac-mcp", "mcp-server") is None
+    # unpublish 收尾摘实例：路由不存在 → False（容忍，不算失败）
+    assert client.delete_route_plugin("summer-laac-mcp", "mcp-server") is False
+    # 语义分层：UnknownRoute 必须是 NotFound 子类（publisher 回滚按 NotFound 容忍）
+    with pytest.raises(GatewayNotFound):
+        client._request(
+            "GET", "/v1/routes/nope/plugin-instances/mcp-server", allow_404=True
+        )
+    client.close()
+
+
+def test_console_genuine_400_still_raises():
+    """非 "Unknown route" 的 400 不能被吞成 None——真实校验拒绝仍是错误。"""
+    import httpx as _httpx
+
+    from octop.mcp_catalog.gateway_client import GatewayClientError, HigressConsoleClient
+
+    def handler(request: _httpx.Request) -> _httpx.Response:
+        if request.url.path == "/session/login":
+            return _httpx.Response(201, json={"success": True})
+        return _httpx.Response(
+            400, json={"success": False, "message": "ValidationException: bad config"}
+        )
+
+    client = HigressConsoleClient(
+        "http://console.test", "admin", "pw", transport=_httpx.MockTransport(handler)
+    )
+    with pytest.raises(GatewayClientError) as ei:
+        client.get_route_plugin("summer-laac-mcp", "mcp-server")
+    assert "Unknown route" not in str(ei.value)
+    client.close()
+
+
+def test_publish_writes_per_route_plugin_instances():
+    """v3：每服务 = 一条路由 + 路由级插件实例（实例模型）。工具挂 mcp-server
+    实例 configurations 顶层，ext-auth 实例 = 固化模板；同规则折叠细节归 Console。"""
+    gw, acl, pub = _publisher_stub()
     svc = _service_row()
-    merge_plugin_rule(plugin, svc, [_tool_row()])
-    rules = plugin["spec"]["matchRules"]
-    assert len(rules) == 2
-    cmc_rule = rules[1]
-    assert cmc_rule["ingress"] == ["summer-cmc-mcp"]
-    # tools live at the TOP LEVEL of the rule config (pilot rule #1)
-    assert [t["name"] for t in cmc_rule["config"]["tools"]] == ["list_cmc_banks"]
-    # re-merge replaces this rule's tools, not duplicate the rule
-    merge_plugin_rule(plugin, svc, [_tool_row(name="second_tool")])
-    rules = plugin["spec"]["matchRules"]
-    assert len(rules) == 2
-    assert [t["name"] for t in rules[1]["config"]["tools"]] == ["second_tool"]
+    detail = pub.publish(svc, [_tool_row()], {"cheryfs": ["t1"]})
+    assert detail["written"] is True
+    # mcp-server 实例：tools 在顶层，server.name=service_id
+    mcp = gw.plugins[("summer-cmc-mcp", "mcp-server")]
+    assert mcp["server"] == {"name": "summer-cmc", "type": "rest"}
+    assert [t["name"] for t in mcp["tools"]] == ["list_cmc_banks"]
+    # ext-auth 实例 = 固化线上模板（fail-closed by construction）
+    assert gw.plugins[("summer-cmc-mcp", "ext-auth")]["failure_mode_allow"] is False
+    # 路由先建（Console 拒绝对不存在路由挂实例，实测 400 Unknown route）
+    assert "summer-cmc-mcp" in gw.routes
+    assert detail["route"]["action"] == "created"
 
 
-def test_merge_plugin_rule_drops_rule_when_no_enabled_tools():
-    plugin = {
-        "spec": {
-            "matchRules": [{"ingress": ["summer-cmc-mcp"], "config": {"tools": [{"name": "x"}]}}]
-        }
-    }
-    merge_plugin_rule(plugin, _service_row(), [_tool_row(enabled=False)])
-    assert plugin["spec"]["matchRules"] == []
+def test_publish_first_write_rolls_back_created_route_on_failure():
+    """补偿回滚回归：首发（路由为本调用新建）时实例/ACL 写入失败 → 回滚删除
+    路由，失败终态保持"无路由"（coverage-first 不变量的 Console 载体）。"""
+    class _BoomGateway(_FakeGateway):
+        def put_route_plugin(self, route, plugin, configurations):
+            if plugin == "ext-auth":
+                raise GatewayClientError("console 500")
+            super().put_route_plugin(route, plugin, configurations)
+
+    gw, acl = _BoomGateway(), _AclStub()
+    pub = CatalogPublisher(gw, acl)
+    with pytest.raises(GatewayClientError):
+        pub.publish(_service_row(), [_tool_row()], {"cheryfs": ["t1"]})
+    assert "summer-cmc-mcp" not in gw.routes
+    assert gw.plugins == {}
 
 
-def test_ext_auth_stays_single_rule():
-    ext = {
-        "spec": {
-            "matchRules": [{"ingress": ["octop-pilot-mcp"], "config": {"http_service": {"x": 1}}}]
-        }
-    }
-    merge_ext_auth_rule(ext, _service_row())
-    rules = ext["spec"]["matchRules"]
-    # the collapse-bug invariant: ONE rule, TWO ingresses
-    assert len(rules) == 1
-    assert rules[0]["ingress"] == ["octop-pilot-mcp", "summer-cmc-mcp"]
-    # idempotent
-    merge_ext_auth_rule(ext, _service_row())
-    assert ext["spec"]["matchRules"][0]["ingress"].count("summer-cmc-mcp") == 1
+def test_publish_updated_route_failure_keeps_route():
+    """更新路径（路由已存在）失败 → 不回滚别人的路由，mixed 态交给 reconcile。"""
+    class _BoomGateway(_FakeGateway):
+        def put_route_plugin(self, route, plugin, configurations):
+            if plugin == "ext-auth":
+                raise GatewayClientError("console 500")
+            super().put_route_plugin(route, plugin, configurations)
+
+    gw, acl = _BoomGateway(), _AclStub()
+    pub = CatalogPublisher(gw, acl)
+    gw.routes["summer-cmc-mcp"] = {"name": "summer-cmc-mcp"}  # 已存在
+    with pytest.raises(GatewayClientError):
+        pub.publish(_service_row(), [_tool_row()], {"cheryfs": ["t1"]})
+    assert "summer-cmc-mcp" in gw.routes  # 未回滚
+
+
+def test_publish_drops_mcp_server_instance_when_no_enabled_tools():
+    """v3：无启用工具 → 清掉残留 mcp-server 实例（旧数据面=移除该服务 rule）。"""
+    gw, acl, pub = _publisher_stub()
+    svc = _service_row()
+    gw.plugins[("summer-cmc-mcp", "mcp-server")] = {"tools": [{"name": "stale"}]}
+    detail = pub.publish(svc, [_tool_row(enabled=False)], {"cheryfs": []})
+    assert detail["plugins"]["mcp-server"] == "cleared"
+    assert ("summer-cmc-mcp", "mcp-server") not in gw.plugins
 
 
 def test_acl_map_and_disabled_tools():
@@ -832,83 +910,103 @@ def test_service_body_accepts_null_allowed_roles():
     assert body.allowed_roles == []
 
 
-# ---------------------------------------------------------------- publisher ACL dataId
+# --------------------------------------------- publisher（Console 对象模型）
 
 
-class _StubClient:
-    """Records publish/delete calls; get_config returns a minimal pair of plugin configs."""
+class _FakeGateway:
+    """Console 客户端假件：内存对象模型（路由 + 路由级插件实例）."""
 
     def __init__(self):
-        self.published = {}
-        self.deleted = []
-        self.delete_result = True
-        self.configs = {
-            "wasmplugins.mcp-server": json.dumps({"spec": {"matchRules": []}}),
-            "wasmplugins.ext-auth": json.dumps(
-                {"spec": {"matchRules": [{"ingress": ["octop-pilot-mcp"], "config": {}}]}}
-            ),
-        }
+        self.routes: dict[str, dict] = {}
+        self.plugins: dict[tuple[str, str], dict] = {}
 
-    def get_config(self, data_id):
-        return self.configs.get(data_id)
+    def get_route(self, name):
+        return self.routes.get(name)
+
+    def ensure_route(self, spec):
+        action = "updated" if spec.name in self.routes else "created"
+        self.routes[spec.name] = spec.to_request()
+        return action
+
+    def put_route_plugin(self, route, plugin, configurations):
+        self.plugins[(route, plugin)] = configurations
+
+    def get_route_plugin(self, route, plugin):
+        return self.plugins.get((route, plugin))
+
+    def delete_route(self, name):
+        existed = name in self.routes
+        self.routes.pop(name, None)
+        for key in [k for k in self.plugins if k[0] == name]:
+            del self.plugins[key]
+        return existed
+
+    def delete_route_plugin(self, route, plugin):
+        return self.plugins.pop((route, plugin), None) is not None
+
+    def list_service_sources(self):
+        return list(_CONSOLE_SOURCES)
+
+
+class _AclStub:
+    """nacos 客户端假件：仅承载 mcp-hub ACL 分发通道."""
+
+    def __init__(self):
+        self.published: dict[str, str] = {}
 
     def publish_config(self, data_id, content, *, content_type="json"):
-        self.published[data_id] = (content, content_type)
-        self.configs[data_id] = content  # nacos live semantics: next get sees the write
+        self.published[data_id] = content
+        return True
 
     def delete_config(self, data_id):
-        self.deleted.append(data_id)
-        return self.delete_result
+        return True
+
+
+def _publisher_stub():
+    """构造 (gateway, acl, CatalogPublisher) 三元组，测试按需检视前两者."""
+    gw, acl = _FakeGateway(), _AclStub()
+    return gw, acl, CatalogPublisher(gw, acl)
 
 
 def test_publish_writes_acl_distribution_channel():
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()
-    pub = CatalogPublisher(client)
+    gw, acl, pub = _publisher_stub()
     svc = _service_row()
     tools = [_tool_row(name="t1", roles=("cheryfs",))]
     global_acl = {"cheryfs": ["t1"], "guest": []}
     detail = pub.publish(svc, tools, global_acl)
     assert detail["written"] is True
     # ACL dataId 是分发通道：内容 = 调用方给的全局映射
-    assert client.published.get("mcphub.tool-acl.json", (None,))[0] == json.dumps(
+    assert acl.published.get("mcphub.tool-acl.json") == json.dumps(
         {"cheryfs": ["t1"], "guest": []}, ensure_ascii=False, indent=2
     )
 
 
 def test_publish_dry_run_does_not_write_acl():
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()
-    pub = CatalogPublisher(client)
+    gw, acl, pub = _publisher_stub()
     svc = _service_row()
     tools = [_tool_row(name="t1", roles=("cheryfs",))]
     pub.publish(svc, tools, {"cheryfs": ["t1"]}, dry_run=True)
-    assert client.published == {}
+    assert acl.published == {}
+    assert gw.routes == {} and gw.plugins == {}
 
 
 # --------------------------------------------- review fixes (2026-09-25)
 
 
 def test_unpublish_deletes_ingress_route():
-    """评审 P0-1 回归：unpublish 必须真删 ingress（曾留裸 HTTP 代理直通业务系统）。"""
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()
-    pub = CatalogPublisher(client)
+    """评审 P0-1 回归：unpublish 必须真删路由（曾留裸 HTTP 代理直通业务系统）。
+    v3：DELETE 路由先行（Console 级联清理实例规则），再显式摘两个实例。"""
+    gw, acl, pub = _publisher_stub()
+    gw.routes["summer-cmc-mcp"] = {"name": "summer-cmc-mcp"}
     detail = pub.unpublish(_service_row(status="published"), {"cheryfs": []})
-    assert client.deleted == ["ingresses.summer-cmc-mcp"]
-    assert detail["ingress_delete"] == {"dataId": "ingresses.summer-cmc-mcp", "deleted": True}
+    assert detail["route_delete"] == {"name": "summer-cmc-mcp", "deleted": True}
+    assert "summer-cmc-mcp" not in gw.routes
 
 
 def test_unpublish_missing_ingress_is_idempotent():
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()
-    client.delete_result = False  # nacos: config not exist → 幂等 False
-    detail = CatalogPublisher(client).unpublish(_service_row(), None)
-    assert detail["ingress_delete"]["deleted"] is False
+    gw, acl, pub = _publisher_stub()
+    detail = pub.unpublish(_service_row(), None)
+    assert detail["route_delete"]["deleted"] is False
 
 
 def test_gateway_field_validation_blocks_yaml_injection():
@@ -1045,19 +1143,29 @@ def test_upsert_tool_single_statement_conflict(repo: CatalogRepo):
 # ------------------------------------------------ round-2 review regressions
 
 
-def test_ext_auth_multi_rule_fails_closed():
-    """第二轮评审 A 回归：多 matchRule 时不能猜 rules[0]（挂错规则=免鉴权），
-    必须 fail-closed 抛 ValueError 让 publish 变 502。"""
-    ext = {
-        "spec": {
-            "matchRules": [
-                {"ingress": ["octop-pilot-mcp"], "config": {"http_service": {"x": 1}}},
-                {"ingress": ["rogue"], "config": {"http_service": {"x": 2}}},
-            ]
-        }
-    }
-    with pytest.raises(ValueError, match="multiple matchRules"):
-        merge_ext_auth_rule(ext, _service_row())
+def test_ext_auth_template_is_frozen_and_deep_copied():
+    """ext-auth 配置 = 固化线上策略模板（fail-closed by construction）。
+    实例模型下不再有跨服务 matchRules 合并（多规则猜测问题消亡），但模板
+    深拷贝纪律必须保持：一次 publish 不得污染常量。"""
+    import copy as _copy
+
+    from octop.mcp_catalog.publisher import _EXT_AUTH_DEFAULT_RULE_CONFIG
+
+    gw, acl, pub = _publisher_stub()
+    before = _copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)
+    pub.publish(_service_row(), [_tool_row()], {"cheryfs": ["t1"]})
+    written = gw.plugins[("summer-cmc-mcp", "ext-auth")]
+    assert written == before
+    assert written["failure_mode_allow"] is False
+    assert written["status_on_error"] == 403
+    # 2026-10-15 laac 事故回归：模板必须带 /mcp-api 白名单豁免——
+    # mcp-server 插件的 REST 内部回环（无 Authorization）绝不能被 ext-auth 拦截
+    assert written["match_type"] == "whitelist"
+    assert written["match_list"] == [
+        {"match_rule_path": "/mcp-api/", "match_rule_type": "prefix"}
+    ]
+    # 常量未被运行期写入污染
+    assert _EXT_AUTH_DEFAULT_RULE_CONFIG == before
 
 
 def test_import_prunes_only_openapi_source_tools(repo: CatalogRepo):
@@ -1201,49 +1309,20 @@ def test_import_mixed_required_optional_body_still_renders_valid():
     }
 
 
-def test_ext_auth_empty_rules_rebuild_default_rule():
-    """第四轮评审 §3 回归：unpublish 摘掉最后一个服务后 matchRules 变空，
-    旧代码在 merge 时空列表直接 raise → 此后任何 publish 永久 502。
-    现在必须按固化模板重建一条（fail-closed 构造），并挂上本服务 ingress。"""
-    import copy as _copy
-
-    from octop.mcp_catalog.publisher import _EXT_AUTH_DEFAULT_RULE_CONFIG
-
-    ext = {"spec": {"failStrategy": "FAIL_CLOSE", "matchRules": []}}
-    merge_ext_auth_rule(ext, _service_row())
-    rules = ext["spec"]["matchRules"]
-    assert len(rules) == 1
-    assert rules[0]["ingress"] == ["summer-cmc-mcp"]
-    assert rules[0]["config"] == _EXT_AUTH_DEFAULT_RULE_CONFIG
-    # 重建的规则必须 fail-closed by construction
-    assert rules[0]["config"]["failure_mode_allow"] is False
-    assert rules[0]["config"]["status_on_error"] == 403
-    # 模板是深拷贝：再次合并不污染常量
-    before = _copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)
-    merge_ext_auth_rule(ext, _service_row(service_id="other", nacos_service_name="other"))
-    assert before == _EXT_AUTH_DEFAULT_RULE_CONFIG
-
-
 def test_unpublish_last_service_then_publish_recovers():
-    """第四轮评审 §3 死锁复现路径回归：unpublish 掉最后一个服务
-    （ext-auth matchRules 变 []）后，publish 必须能自愈而不是 502。"""
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()
-    client.configs["wasmplugins.ext-auth"] = json.dumps(
-        {"spec": {"matchRules": [{"ingress": ["summer-cmc-mcp"], "config": {}}]}}
-    )
-    pub = CatalogPublisher(client)
+    """第四轮评审 §3 死锁回归（实例模型下问题类消亡，保留自愈语义）：
+    unpublish 摘掉最后一个服务后重新 publish 必须成功，且 ext-auth 实例
+    按固化模板重建（fail-closed by construction）。"""
+    gw, acl, pub = _publisher_stub()
     svc = _service_row(status="published")
     pub.unpublish(svc, {"cheryfs": []})
-    # 摘空后 ext-auth matchRules == []（旧代码从这一步起 publish 永久 502）
-    assert json.loads(client.published["wasmplugins.ext-auth"][0])["spec"]["matchRules"] == []
-    # 重新 publish：不再抛错，且默认规则被重建
+    # 摘除后无残留实例（旧代码在这一步之后 publish 永久 502）
+    assert gw.plugins == {} and gw.routes == {}
+    # 重新 publish：不再抛错，默认策略重建
     detail = pub.publish(svc, [_tool_row()], {"cheryfs": ["list_cmc_banks"]})
-    ext = json.loads(detail["ext_auth"]["content"])
-    assert len(ext["spec"]["matchRules"]) == 1
-    assert ext["spec"]["matchRules"][0]["ingress"] == ["summer-cmc-mcp"]
-    assert ext["spec"]["matchRules"][0]["config"]["failure_mode_allow"] is False
+    ext = gw.plugins[("summer-cmc-mcp", "ext-auth")]
+    assert ext["failure_mode_allow"] is False
+    assert detail["plugins"]["ext-auth"] == "set"
 
 
 def test_import_openapi_applies_gateway_validation(repo: CatalogRepo, monkeypatch):
@@ -1339,9 +1418,8 @@ def test_publish_and_reconcile_compute_acl_inside_lock(repo: CatalogRepo, monkey
             return {
                 "acl": acl_map,
                 "written": not dry_run,
-                "ingress": {"dataId": "i", "content": ""},
-                "mcp_server": {"dataId": "m", "content": ""},
-                "ext_auth": {"dataId": "e", "content": ""},
+                "route": {"name": "i", "path": "/", "service": {"name": "s", "port": 1}, "action": None},
+                "plugins": {"ext-auth": "set", "mcp-server": "set"},
             }
 
     monkeypatch.setattr(router, "_publisher", lambda: _StubPub())
@@ -1364,22 +1442,15 @@ def test_publish_blocks_roleless_platform_shared_service(repo: CatalogRepo, monk
 
     repo.create_service(_svc_fields(service_id="svc-shared", org_id="*"))
     repo.upsert_tool(_tool_fields(service_id="svc-shared"))
-    # Stub the nacos client: this test used to (accidentally) pass by
+    # Stub both channels: this test used to (accidentally) pass by
     # logging into whatever listens on localhost:8848 — on a dev box with a
     # live nacos3 it silently depended on real default credentials, and a
     # wrong password turned the dry-run branch into a 502 (review
-    # 2026-10-02 P1-2 fallout). Hermetic now.
-    class _StubClient:
-        def get_config(self, data_id):
-            return json.dumps({"spec": {"matchRules": []}})
-
-        def publish_config(self, data_id, content, content_type=None):
-            return True
-
-        def delete_config(self, data_id):
-            return True
-
-    monkeypatch.setattr(router, "NacosConfigClient", lambda *a: _StubClient())
+    # 2026-10-02 P1-2 fallout). Hermetic now. v3: the gateway channel
+    # (Console) is stubbed too — _publisher() builds both, and even a
+    # dry-run publish reads the live route state through it.
+    monkeypatch.setattr(router, "gateway_client_from_env", lambda: _FakeGateway())
+    monkeypatch.setattr(router, "NacosConfigClient", lambda *a: _AclStub())
     server = _types.SimpleNamespace(services=_types.SimpleNamespace(db=repo._db))
     user = _types.SimpleNamespace(username="tester")
 
@@ -1731,17 +1802,19 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
 
     writes: list[str] = []
 
-    class _RecordingClient:
-        def get_config(self, data_id):
-            return json.dumps({"spec": {"matchRules": []}})
+    class _RecordingGateway(_FakeGateway):
+        def put_route_plugin(self, route, plugin, configurations):
+            writes.append(f"put:{plugin}")
+            super().put_route_plugin(route, plugin, configurations)
 
-        def publish_config(self, data_id, content, content_type=None):
-            writes.append(data_id)
-            return True
+        def ensure_route(self, spec):
+            writes.append(f"route:{spec.name}")
+            return super().ensure_route(spec)
 
-        def delete_config(self, data_id):
-            writes.append(f"delete:{data_id}")
-            return True
+    class _RecordingAcl(_AclStub):
+        def publish_config(self, data_id, content, *, content_type="json"):
+            writes.append(f"acl:{data_id}")
+            return super().publish_config(data_id, content, content_type=content_type)
 
     fence_calls = {"n": 0}
 
@@ -1751,7 +1824,7 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
             raise RuntimeError("publish lock lost mid-flight")
 
     with pytest.raises(RuntimeError):
-        CatalogPublisher(_RecordingClient()).publish(
+        CatalogPublisher(_RecordingGateway(), _RecordingAcl()).publish(
             repo.get_service("summer-cmc"),
             repo.list_tools("summer-cmc"),
             {"role": ["summer-cmc_tool"]},
@@ -1759,9 +1832,10 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
             fence=fence,
         )
     # first write happened, then the fence aborted the rest. Publish order
-    # (review 2026-10-02 P1-2): coverage first (ext-auth → plugin → ACL),
-    # route LAST — the first write is the ext-auth rule, not the ingress.
-    assert writes == ["wasmplugins.ext-auth"]
+    # (Console constraint): route FIRST (plugin instances need an existing
+    # route), then coverage via compensation — a fence abort on a freshly
+    # created route rolls it back, so the terminal state stays "no route".
+    assert writes == ["route:summer-cmc-mcp"]
 
     # router level: a fence failure surfaces as 502 with a publish log entry
     class _FenceStubPub:
@@ -1770,9 +1844,8 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
             return {
                 "acl": acl_map,
                 "written": not dry_run,
-                "ingress": {"dataId": "i", "content": ""},
-                "mcp_server": {"dataId": "m", "content": ""},
-                "ext_auth": {"dataId": "e", "content": ""},
+                "route": {"name": "i", "path": "/", "service": {"name": "s", "port": 1}, "action": None},
+                "plugins": {"ext-auth": "set", "mcp-server": "set"},
             }
 
     monkeypatch.setattr(router, "_publisher", lambda: _FenceStubPub())
@@ -1789,47 +1862,36 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
     assert ei.value.status_code == 502
 
 
-# ---------------------------------------------------------------- sources (v2: 服务来源实时读 Higress)
+# ---------------------------------------------------------------- sources (v3: 服务来源实时读 Console)
 
-_BRIDGE_YAML = """\
-apiVersion: networking.higress.io/v1
-kind: McpBridge
-metadata:
-  name: default
-  namespace: higress-system
-spec:
-  registries:
-  - name: nacos
-    type: nacos2
-    domain: nacos3:8848
-    port: 8848
-    nacosNamespaceId: local
-    nacosGroups: [DEFAULT_GROUP]
-    authSecretName: nacos-auth-default
-  - name: eureka
-    type: eureka
-    domain: eureka:8761
-    port: 8761
-  - name: octop-pilot
-    type: static
-    domain: 172.29.0.9:9099
-    port: 80
-  - no-name-entry: true
-"""
+_CONSOLE_SOURCES = [
+    {
+        "name": "nacos",
+        "type": "nacos2",
+        "domain": "nacos3:8848",
+        "port": 8848,
+        "properties": {"nacosNamespaceId": "local", "nacosGroups": ["DEFAULT_GROUP"]},
+    },
+    {"name": "eureka", "type": "eureka", "domain": "eureka:8761", "port": 8761},
+    {"name": "octop-pilot", "type": "static", "domain": "172.29.0.9:9099", "port": 80},
+    {"no-name-entry": True},  # 缺 name/type 的条目跳过（controller 自身不可用的来源）
+]
 
 
-def test_parse_bridge_registries_extracts_live_shape():
-    """活体 mcpbridge 形状（v2 设计 §〇-2）：下拉=registries[] 的 name/type/domain/port 投影。"""
-    from octop.mcp_catalog.sources import parse_bridge_registries
+def test_parse_service_sources_extracts_live_shape():
+    """活体 Console 形状（2026-10-15 实测）：下拉=name/type/domain/port 投影；
+    nacos2 的 namespace/group 在 properties.nacosNamespaceId/nacosGroups。"""
+    from octop.mcp_catalog.sources import parse_service_sources
 
-    sources = parse_bridge_registries(_BRIDGE_YAML)
-    assert [s["name"] for s in sources] == ["nacos", "eureka", "octop-pilot"]  # 缺 name/type 的条目跳过
+    sources = parse_service_sources(_CONSOLE_SOURCES)
+    assert [s["name"] for s in sources] == ["nacos", "eureka", "octop-pilot"]
     nacos = sources[0]
     assert nacos["type"] == "nacos2"
     assert nacos["domain"] == "nacos3:8848"
     assert nacos["port"] == 8848
-    # nacos registry 额外透传默认 namespace（表单预填用）
+    # nacos registry 额外透传默认 namespace（naming 查询补全用）
     assert nacos["nacos_namespace_id"] == "local"
+    assert nacos["nacos_group"] == "DEFAULT_GROUP"
     assert "nacos_namespace_id" not in sources[1]  # eureka 无此字段
     assert sources[2] == {
         "name": "octop-pilot",
@@ -1839,48 +1901,43 @@ def test_parse_bridge_registries_extracts_live_shape():
     }
 
 
-def test_parse_bridge_rejects_malformed_fail_closed():
-    """空列表会伪装成「没有可用来源」误导管理员——畸形配置必须显式报错。"""
-    import yaml as _yaml
-
-    from octop.mcp_catalog.sources import parse_bridge_registries
+def test_parse_service_sources_rejects_malformed_fail_closed():
+    """空列表会伪装成「没有可用来源」误导管理员——畸形载荷必须显式报错。"""
+    from octop.mcp_catalog.sources import parse_service_sources
 
     with pytest.raises(ValueError):
-        parse_bridge_registries("not: [a, bridge]")
+        parse_service_sources("not-a-list")
     with pytest.raises(ValueError):
-        parse_bridge_registries(_yaml.safe_dump({"spec": {}}))  # registries 缺失
+        parse_service_sources({"data": _CONSOLE_SOURCES})  # 忘了解信封
     with pytest.raises(ValueError):
-        parse_bridge_registries(_yaml.safe_dump(["a", "list"]))  # 非 object
+        parse_service_sources(None)
 
 
-def test_list_bridge_sources_missing_bridge_is_an_error_not_empty(monkeypatch):
-    """mcpbridges.default 不存在 → ValueError（路由层 502），绝不静默返回空列表。"""
+def test_list_service_sources_unreachable_is_error_not_empty(monkeypatch):
+    """Console 不可达 → GatewayClientError（路由层 502），绝不静默返回空列表。"""
     from octop.mcp_catalog import sources as sources_mod
 
-    class _MissingClient:
-        def __init__(self, *a, **kw):
-            pass
+    class _DownClient:
+        def list_service_sources(self):
+            raise GatewayClientError("console: GET /v1/service-sources → HTTP 502")
 
-        def get_config(self, data_id):
-            return None
-
-    monkeypatch.setattr(sources_mod, "NacosConfigClient", _MissingClient)
-    with pytest.raises(ValueError, match="mcpbridges.default not found"):
-        sources_mod.list_bridge_sources("http://nacos3:8848", "nacos", "nacos")
+    with pytest.raises(GatewayClientError):
+        sources_mod.list_service_sources(_DownClient())
 
 
 def test_list_sources_endpoint_fail_closed(monkeypatch):
-    """路由层：nacos 不可达/畸形桥 → 502 带原因；正常 → sources 原样透传。"""
+    """路由层：Console 不可达/畸形载荷 → 502 带原因；正常 → sources 原样透传。"""
     from fastapi import HTTPException
 
     from octop.mcp_catalog import router
     from octop.mcp_catalog import sources as sources_mod
-    from octop.mcp_catalog.nacos_client import NacosConfigError
+
+    monkeypatch.setattr(router, "gateway_client_from_env", lambda: None)  # 透传给 stub
 
     monkeypatch.setattr(
         sources_mod,
-        "list_bridge_sources",
-        lambda *a: (_ for _ in ()).throw(NacosConfigError("nacos request failed: refused")),
+        "list_service_sources",
+        lambda *a: (_ for _ in ()).throw(GatewayClientError("console down")),
     )
     with pytest.raises(HTTPException) as ei:
         router.list_sources(None)
@@ -1888,7 +1945,7 @@ def test_list_sources_endpoint_fail_closed(monkeypatch):
     assert "unavailable" in ei.value.detail
 
     monkeypatch.setattr(
-        sources_mod, "list_bridge_sources", lambda *a: (_ for _ in ()).throw(ValueError("bad"))
+        sources_mod, "list_service_sources", lambda *a: (_ for _ in ()).throw(ValueError("bad"))
     )
     with pytest.raises(HTTPException) as ei:
         router.list_sources(None)
@@ -1897,7 +1954,7 @@ def test_list_sources_endpoint_fail_closed(monkeypatch):
 
     monkeypatch.setattr(
         sources_mod,
-        "list_bridge_sources",
+        "list_service_sources",
         lambda *a: [{"name": "nacos", "type": "nacos2", "domain": "nacos3:8848", "port": 8848}],
     )
     out = router.list_sources(None)
@@ -1979,49 +2036,19 @@ def test_preview_tool_validates_like_publish(repo: CatalogRepo):
 
 # ------------------------------------------------- v2 P2: registry 感知与门禁
 
-_BRIDGE_YAML_P2 = """\
-apiVersion: networking.higress.io/v1
-kind: McpBridge
-metadata:
-  name: default
-spec:
-  registries:
-  - name: nacos
-    type: nacos2
-    domain: nacos3:8848
-    port: 8848
-  - name: eureka-src
-    type: eureka
-    domain: eureka:8761
-    port: 8761
-  - name: pilot-static
-    type: static
-    domain: 172.29.0.9:9099
-    port: 80
-"""
+_CONSOLE_SOURCES_P2 = [
+    {"name": "nacos", "type": "nacos2", "domain": "nacos3:8848", "port": 8848},
+    {"name": "eureka-src", "type": "eureka", "domain": "eureka:8761", "port": 8761},
+    {"name": "pilot-static", "type": "static", "domain": "172.29.0.9:9099", "port": 80},
+]
 
 
-def _bridge_client():
-    class _C:
-        def __init__(self):
-            self.configs = {
-                "mcpbridges.default": _BRIDGE_YAML_P2,
-                "wasmplugins.mcp-server": json.dumps({"spec": {"matchRules": []}}),
-                "wasmplugins.ext-auth": json.dumps(
-                    {"spec": {"matchRules": [{"ingress": ["x"], "config": {}}]}}
-                ),
-            }
+def _sources_gateway():
+    class _G(_FakeGateway):
+        def list_service_sources(self):
+            return list(_CONSOLE_SOURCES_P2)
 
-        def get_config(self, data_id):
-            return self.configs.get(data_id)
-
-        def publish_config(self, data_id, content, *, content_type="json"):
-            self.configs[data_id] = content
-
-        def delete_config(self, data_id):
-            return True
-
-    return _C()
+    return _G()
 
 
 def test_gateway_destination_dispatch_by_registry_type():
@@ -2048,48 +2075,49 @@ def test_gateway_destination_dispatch_by_registry_type():
 def test_resolve_registry_found_and_missing():
     from octop.mcp_catalog.publisher import resolve_registry
 
-    client = _bridge_client()
-    entry = resolve_registry(client, "eureka-src")
+    gw = _sources_gateway()
+    entry = resolve_registry(gw, "eureka-src")
     assert entry["type"] == "eureka"
-    with pytest.raises(ValueError, match="not found in mcpbridges.default"):
-        resolve_registry(client, "nope")
+    with pytest.raises(ValueError, match="not found in live service sources"):
+        resolve_registry(gw, "nope")
 
-    class _NoBridge:
-        def get_config(self, data_id):
-            return None
+    class _BadPayload:
+        def list_service_sources(self):
+            return {"not": "a list"}
 
-    with pytest.raises(ValueError, match="mcpbridges.default not found"):
-        resolve_registry(_NoBridge(), "eureka-src")
+    with pytest.raises(ValueError):
+        resolve_registry(_BadPayload(), "eureka-src")
 
 
 def test_publish_refuses_unverified_registry_type():
     """P2.3 门禁：eureka destination 格式未探针验证 → publisher 拒发。"""
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
     svc = _service_row(registry_name="eureka-src")
     with pytest.raises(ValueError, match="not live-verified"):
-        CatalogPublisher(_bridge_client()).publish(svc, [_tool_row()], {"cheryfs": ["t1"]})
+        CatalogPublisher(_sources_gateway(), _AclStub()).publish(
+            svc, [_tool_row()], {"cheryfs": ["t1"]}
+        )
 
 
 def test_publish_static_registry_uses_live_calibrated_destination():
     """static 已被活体 ingress 验证（octop-pilot.static:8088）→ 门禁放行，
-    ingress 注解按 static 格式合成。"""
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _bridge_client()
+    路由服务名按 static 格式合成（端口取服务行 backend_port）。"""
     svc = _service_row(registry_name="pilot-static")
-    detail = CatalogPublisher(client).publish(svc, [_tool_row()], {"cheryfs": ["t1"]})
-    assert "pilot-static.static:48088" in detail["ingress"]["content"]
+    detail = CatalogPublisher(_sources_gateway(), _AclStub()).publish(
+        svc, [_tool_row()], {"cheryfs": ["t1"]}
+    )
+    assert detail["route"]["service"] == {"name": "pilot-static.static", "port": 48088}
 
 
-def test_default_registry_keeps_legacy_path_without_bridge_lookup():
-    """registry_name='nacos'（默认）不查 mcpbridges.default —— 存量服务与
-    既有测试的 stub client（无桥配置）零漂移。"""
-    from octop.mcp_catalog.publisher import CatalogPublisher
-
-    client = _StubClient()  # configs 里没有 mcpbridges.default
-    detail = CatalogPublisher(client).publish(_service_row(), [_tool_row()], {"cheryfs": ["t1"]})
-    assert "summer-cmc.DEFAULT-GROUP.local.nacos:48088" in detail["ingress"]["content"]
+def test_default_registry_keeps_legacy_path_without_sources_lookup():
+    """registry_name='nacos'（默认）不查 service-sources —— 存量服务与
+    既有测试的 stub 网关（空来源列表）零漂移。"""
+    detail = CatalogPublisher(_FakeGateway(), _AclStub()).publish(
+        _service_row(), [_tool_row()], {"cheryfs": ["t1"]}
+    )
+    assert detail["route"]["service"] == {
+        "name": "summer-cmc.DEFAULT-GROUP.local.nacos",
+        "port": 48088,
+    }
 
 
 # ------------------------------------------------- v2 P3: naming 联动
@@ -2179,6 +2207,7 @@ def test_source_services_endpoint_dispatch(monkeypatch):
 
     from octop.mcp_catalog import router
 
+    monkeypatch.setattr(router, "gateway_client_from_env", lambda: None)  # resolve_registry 已 stub
     monkeypatch.setattr(router, "resolve_registry",
                         lambda c, n: {"name": "nacos", "type": "nacos2",
                                       "nacos_namespace_id": "local",
@@ -2253,8 +2282,9 @@ def test_import_openapi_body_channel_and_dry_run(repo: CatalogRepo):
 
 
 def test_publish_diff_against_live_plugin_config(repo: CatalogRepo, monkeypatch):
-    """P4.3：desired=DB(enabled 工具经 build_plugin_tool)，live=nacos 活体
-    规则；canonical 比较 → added/updated/removed/unchanged 精确。"""
+    """P4.3：desired=DB(enabled 工具经 build_plugin_tool)，live=路由级
+    mcp-server 实例的 configurations；canonical 比较 → added/updated/removed/
+    unchanged 精确。"""
     import types as _types
 
     from octop.mcp_catalog import router
@@ -2265,17 +2295,21 @@ def test_publish_diff_against_live_plugin_config(repo: CatalogRepo, monkeypatch)
     desired = build_plugin_tool(repo.list_tools("summer-cmc")[0])
 
     live_entry = json.loads(json.dumps(desired))  # 发布后原样落网关
-    plugin_cfg = {"spec": {"matchRules": [
-        {"ingress": ["summer-cmc-mcp"],
-         "config": {"server": {"name": "summer-cmc"},
-                    "tools": [live_entry, {"name": "stale_tool"}]}}
-    ]}}
+    live_configurations = {
+        "server": {"name": "summer-cmc", "type": "rest"},
+        "tools": [live_entry, {"name": "stale_tool"}],
+    }
 
-    class _LiveClient:
-        def get_config(self, data_id):
-            return json.dumps(plugin_cfg) if data_id == "wasmplugins.mcp-server" else None
+    class _LiveGateway:
+        def __init__(self, configurations):
+            self._configurations = configurations
 
-    monkeypatch.setattr(router, "NacosConfigClient", lambda *a: _LiveClient())
+        def get_route_plugin(self, route, plugin):
+            return self._configurations
+
+    monkeypatch.setattr(
+        router, "gateway_client_from_env", lambda: _LiveGateway(live_configurations)
+    )
     server = _types.SimpleNamespace(services=_types.SimpleNamespace(db=repo._db))
     out = router.publish_diff("summer-cmc", None, server)
     assert out == {"published": True, "added": [], "updated": [],
@@ -2287,8 +2321,8 @@ def test_publish_diff_against_live_plugin_config(repo: CatalogRepo, monkeypatch)
     assert out2["updated"] == ["list_cmc_banks"]
     assert out2["unchanged"] == []
 
-    # 网关无规则 → published=False，全部为 added
-    plugin_cfg["spec"]["matchRules"] = []
+    # 网关无实例 → published=False，全部为 added
+    monkeypatch.setattr(router, "gateway_client_from_env", lambda: _LiveGateway(None))
     out3 = router.publish_diff("summer-cmc", None, server)
     assert out3["published"] is False and out3["added"] == ["list_cmc_banks"]
 

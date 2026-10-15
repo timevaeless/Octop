@@ -1,30 +1,43 @@
-"""Publish pipeline: catalog rows → nacos configs (ingress / plugins).
+"""Publish pipeline: catalog rows → Higress gateway objects (Console API).
 
-Encodes the three hard-won gateway rules from the summer-cmc pilot:
+v3 (2026-10-15 拍板): Octop 下发配置统一走 Higress **Console REST 通道**
+（``gateway_client.HigressConsoleClient``，模拟人操作页面）——不感知、不依赖
+Higress 的配置存储选型。每个服务 = 一条路由 + 路由级插件实例（实例模型），
+不再做跨服务的整份配置读-合并-写：同名规则折叠等 CR 序列化细节由 Console
+负责（实测 DELETE 路由会级联清理实例规则，无孤儿）。
 
-1. **Ingress per backend service** — the mcp-server plugin forwards by route
-   destination, *not* by tool URL host, so every service needs its own ingress
-   (longer prefix wins) and tool URLs stay relative.
-2. **mcp-server plugin**: ``tools`` is read from the *top level* of a rule's
-   config (a nested ``server.tools`` makes the whole listener fail with
-   "type not registered"); each service gets its own matchRule.
-3. **ext-auth**: identical configs across matchRules get collapsed by the
-   controller and the later rule is *dropped*, so additional ingresses are
-   appended to the single existing rule's ``ingress`` array instead.
+编码自 summer-cmc 试点、仍然成立的规则：
 
-``build_*`` functions are pure (unit-testable); ``CatalogPublisher`` performs
-get-merge-publish against nacos, with dry-run support.
+1. **每服务一条路由** — mcp-server 插件按路由 destination 转发（长前缀优先），
+   工具 URL 保持相对路径；
+2. **mcp-server 实例**：``tools`` 挂在路由级实例的 ``configurations`` 顶层
+   （嵌套 ``server.tools`` 会让整个 listener 挂掉——该语义随实例模型保持
+   不变，``build_plugin_tool`` 输出形状原样沿用）；
+3. **ext-auth 实例**：配置取自冻结的线上策略模板
+   （:data:`_EXT_AUTH_DEFAULT_RULE_CONFIG`，fail-closed：FAIL_CLOSE + 403）。
+   旧数据面下的"同名配置折叠 bug"规避逻辑（单规则追加 ingress）随 dataId
+   通道一并退役——Console 的实例模型本身就是按路由管理的。
+
+``build_*`` / role 相关函数是纯函数（unit-testable）；``CatalogPublisher``
+编排 Console 调用与 mcp-hub ACL 分发，支持 dry-run。
+
+mcp-hub ACL（``mcphub.tool-acl.json``）是 hub watcher 轮询的**分发通道**，
+不是网关配置——仍走 nacos 客户端（``acl_client``），与本通道解耦。
 """
 
 from __future__ import annotations
 
 import copy
 import json
+import logging
 from collections.abc import Callable
 from typing import Any
 
+from octop.mcp_catalog.gateway_client import RouteSpec, split_destination
 from octop.mcp_catalog.models import McpServiceRow, McpToolRow
-from octop.mcp_catalog.sources import parse_bridge_registries
+from octop.mcp_catalog.sources import parse_service_sources
+
+logger = logging.getLogger(__name__)
 
 # v2 P2.3 gate (design §3.2): only registry types whose destination format is
 # live-verified may be published. 'nacos2' verified (echo-demo/summer-cmc live
@@ -37,56 +50,21 @@ _LEGACY_REGISTRY_NAME = "nacos"
 
 
 def resolve_registry(client: Any, registry_name: str) -> dict[str, Any]:
-    """Resolve one registry entry by name from the LIVE mcpbridges.default.
+    """Resolve one registry entry by name from the LIVE service sources.
 
-    Fail-closed: a missing bridge or an unknown registry name raises — the
-    caller must never guess a destination for a registry it cannot see.
+    ``client`` is a gateway client exposing ``list_service_sources()`` (the
+    Console view of the mcpbridge registries). Fail-closed: an unknown
+    registry name raises — the caller must never guess a destination for a
+    registry it cannot see.
     """
-    raw = client.get_config("mcpbridges.default")
-    if raw is None:
-        raise ValueError(
-            f"mcpbridges.default not found — cannot resolve registry '{registry_name}'"
-        )
-    for entry in parse_bridge_registries(raw):
+    for entry in parse_service_sources(client.list_service_sources()):
         if entry["name"] == registry_name:
             return entry
-    raise ValueError(f"registry '{registry_name}' not found in mcpbridges.default")
+    raise ValueError(f"registry '{registry_name}' not found in live service sources")
 
 
 def registry_is_verified(registry_type: str) -> bool:
     return registry_type in VERIFIED_REGISTRY_TYPES
-
-_INGRESS_TEMPLATE = """apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  annotations:
-    higress.io/destination: {destination}
-  labels:
-    higress.io/domain_higress-default-domain: "true"
-    higress.io/resource-definer: higress
-  name: {ingress_name}
-  namespace: higress-system
-spec:
-  ingressClassName: higress
-  rules:
-  - http:
-      paths:
-      - backend:
-          resource:
-            apiGroup: networking.higress.io
-            kind: McpBridge
-            name: default
-        path: {mcp_path}
-        pathType: Prefix
-"""
-
-
-def build_ingress_yaml(service: McpServiceRow, *, destination: str | None = None) -> str:
-    return _INGRESS_TEMPLATE.format(
-        destination=destination or service.gateway_destination(),
-        ingress_name=service.ingress_name,
-        mcp_path=service.resolved_mcp_path,
-    )
 
 
 def build_plugin_tool(tool: McpToolRow) -> dict[str, Any]:
@@ -117,73 +95,13 @@ def build_plugin_tool(tool: McpToolRow) -> dict[str, Any]:
     return entry
 
 
-def merge_plugin_rule(
-    plugin_config: dict[str, Any], service: McpServiceRow, tools: list[McpToolRow]
-) -> dict[str, Any]:
-    """Merge this service's tools into the wasmplugins.mcp-server config (mutates)."""
-    rules = plugin_config.setdefault("spec", {}).setdefault("matchRules", [])
-    ingress_name = service.ingress_name
-    tool_entries = [build_plugin_tool(t) for t in tools if t.enabled]
-
-    rule = next((r for r in rules if ingress_name in (r.get("ingress") or [])), None)
-    if rule is None:
-        rule = {"ingress": [ingress_name]}
-        rules.append(rule)
-    if not tool_entries:
-        rules.remove(rule)  # nothing to expose → remove the stale rule entirely
-        return plugin_config
-    rule["config"] = {
-        "server": {"name": service.service_id, "type": "rest"},
-        "tools": tool_entries,
-    }
-    return plugin_config
-
-
-def merge_ext_auth_rule(ext_auth_config: dict[str, Any], service: McpServiceRow) -> dict[str, Any]:
-    """Add the service's ingress to the single ext-auth matchRule (mutates).
-
-    The rule's config is the authn/authz policy shared by every MCP ingress;
-    per the collapse bug we never create a second identical rule.
-
-    Review round-2 A: with more than one rule the collapse bug (higress
-    controller drops later same-config matchRules) means we cannot know which
-    rule is authoritative — appending to the wrong one would publish the
-    service WITHOUT authn/authz. Fail loudly instead: the operator must
-    collapse the config by hand.
-
-    Review round-4 §3: an EMPTY rule list used to raise too, which deadlocked
-    every subsequent publish — unpublish drops the rule once its last ingress
-    is removed (``ingress: []`` semantics on higress are unverified), so after
-    removing the last service no publish could ever succeed again. Rebuild
-    ONE rule from the frozen live template instead (fail-closed by
-    construction: failure_mode_allow=false) and extend it with this service.
-    """
-    rules = ext_auth_config.setdefault("spec", {}).setdefault("matchRules", [])
-    if len(rules) > 1:
-        raise ValueError(
-            "ext-auth config has multiple matchRules — cannot tell which one "
-            "is authoritative (higress collapse bug); refusing to guess"
-        )
-    if not rules:
-        rules.append({"ingress": [], "config": copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)})
-    ingress_name = service.ingress_name
-    first = rules[0]
-    ingress_list = first.setdefault("ingress", [])
-    if isinstance(ingress_list, str):
-        ingress_list = [ingress_list]
-        first["ingress"] = ingress_list
-    if ingress_name not in ingress_list:
-        ingress_list.append(ingress_name)
-    return ext_auth_config
-
-
-# Review round-4 §3: the ext-auth matchRule ``config`` below is the verified
-# live policy (nacos higress-system/wasmplugins.ext-auth, snapshot 2026-09-25)
+# Review round-4 §3: the ext-auth configuration below is the verified live
+# policy (nacos higress-system/wasmplugins.ext-auth, snapshot 2026-09-25)
 # frozen as a constant: forward_auth to mcp-hub /authz with FAIL_CLOSE and
-# status_on_error 403. It is the single source for rebuilding the rule when
-# unpublish has emptied the matchRule list (see merge_ext_auth_rule). Do not
-# hand-edit without re-verifying against the live config — a drifted template
-# would silently change the authn/authz policy of every MCP route.
+# status_on_error 403. It is applied verbatim as each route's ext-auth plugin
+# instance. Do not hand-edit without re-verifying against the live config —
+# a drifted template would silently change the authn/authz policy of every
+# MCP route.
 _EXT_AUTH_DEFAULT_RULE_CONFIG: dict[str, Any] = {
     "http_service": {
         "endpoint_mode": "forward_auth",
@@ -209,6 +127,15 @@ _EXT_AUTH_DEFAULT_RULE_CONFIG: dict[str, Any] = {
     },
     "failure_mode_allow": False,
     "status_on_error": 403,
+    # 2026-10-15 (laac 401 missing_token 事故): mcp-server 插件把 tools/call
+    # 翻译成 REST 后经网关内部回环转发（/mcp-api/...，无 Authorization——身份
+    # 已由 x-octop-* 头注入）。这条回环若再被 ext-auth 拦截（典型场景：切通
+    # 道后旧的无版本 CR 残留双重实例），hub /authz 会以 missing_token 401 拒绝，
+    # 且错误体被插件包装成工具级 "call failed, status: 401"，极难排查。白名单
+    # 显式声明：内部 REST 转发不做 ext-auth——入口鉴权与内部转发是两件事。
+    # 网关上不存在 /mcp-api 对外路由，豁免不打开未鉴权入口。
+    "match_type": "whitelist",
+    "match_list": [{"match_rule_path": "/mcp-api/", "match_rule_type": "prefix"}],
 }
 
 
@@ -308,21 +235,50 @@ def collect_acl_map(
 
 
 class CatalogPublisher:
-    def __init__(self, client: Any, *, acl_data_id: str = "mcphub.tool-acl.json") -> None:
-        self._client = client
+    def __init__(
+        self,
+        gateway: Any,
+        acl_client: Any,
+        *,
+        acl_data_id: str = "mcphub.tool-acl.json",
+    ) -> None:
+        self._gateway = gateway  # HigressConsoleClient（路由/插件实例）
+        self._acl_client = acl_client  # nacos 客户端（仅 mcp-hub ACL 分发通道）
         self._acl_data_id = acl_data_id
 
     @staticmethod
     def _fence(fence: Callable[[], None] | None) -> None:
-        """Run the publish-lock fencing check before every nacos write.
+        """Run the publish-lock fencing check before every external write.
 
         ``None`` keeps the publisher usable without a lock (tests, dry runs).
         The fence raises RuntimeError when the lease was lost mid-publish —
         a second publisher has taken over and continuing here would clobber
-        its merged snapshot with our stale one (review 2026-09-26 P1-10).
+        its state (review 2026-09-26 P1-10).
         """
         if fence is not None:
             fence()
+
+    def _destination(self, service: McpServiceRow) -> str:
+        """Dispatch the destination by the service's registry entry.
+
+        The default 'nacos' keeps the legacy nacos2 path with NO registry
+        lookup; any other registry must resolve in the live service sources
+        AND be type-verified, else the publish refuses (fail-closed gate).
+        """
+        if service.registry_name == _LEGACY_REGISTRY_NAME:
+            return service.gateway_destination()
+        registry = resolve_registry(self._gateway, service.registry_name)
+        rtype = str(registry.get("type") or "")
+        if not registry_is_verified(rtype):
+            raise ValueError(
+                f"registry '{service.registry_name}' has type '{rtype}' whose "
+                f"destination format is not live-verified yet "
+                f"(verified: {sorted(VERIFIED_REGISTRY_TYPES)}); refusing to "
+                "publish — run the probe validation first (design §3.2)"
+            )
+        return service.gateway_destination(
+            registry_type=rtype, registry_name=service.registry_name
+        )
 
     def publish(
         self,
@@ -333,91 +289,92 @@ class CatalogPublisher:
         dry_run: bool = False,
         fence: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        """Compute (and unless ``dry_run``, write) all derived configs.
+        """Compute (and unless ``dry_run``, write) all derived gateway objects.
 
         ``acl_map`` is the GLOBAL role→tools projection across all published
         services (computed by the caller, which owns the source-of-truth DB).
-        It is written as the mcp-hub ACL dataId — a *distribution channel*,
-        not storage: hub hot-reloads it with zero restart and zero storage;
-        the nacos copy is always regenerable from the catalog DB.
+        It is distributed via the mcp-hub ACL dataId — a *distribution
+        channel*, not storage: hub hot-reloads it with zero restart.
+
+        Write order (Console constraint, live-verified 2026-10-15): the
+        Console REFUSES plugin-instance PUTs targeting a nonexistent route
+        (400 "Unknown route"), so the route must exist before the instances
+        — the inverse of the old dataId order. The coverage-first invariant
+        is preserved by COMPENSATION instead: a failure while attaching
+        instances/ACL to a route this call CREATED rolls the route back, so
+        the failure terminal state stays "no route, everything else intact"
+        — never "route live, authz missing". A failure on an already
+        existing (updated) route keeps the old semantics: mixed old/new
+        state, repairable by reconcile.
         """
         if acl_map is None:
             # 033: the fallback projection honors the service default roles —
             # the router paths always pass an explicit acl_map; this keeps the
             # pure-function path consistent for direct callers/tests.
             acl_map = collect_acl_map(tools, service.allowed_roles)
-        # v2 P2.3: dispatch the destination by the service's registry entry —
-        # the default 'nacos' keeps the legacy nacos2 path with NO bridge
-        # lookup (byte-compat for every pre-P2 service and all existing
-        # tests); any other registry must resolve in the live bridge AND be
-        # type-verified, else the publish refuses (fail-closed gate).
-        destination: str
-        if service.registry_name == _LEGACY_REGISTRY_NAME:
-            destination = service.gateway_destination()
-        else:
-            registry = resolve_registry(self._client, service.registry_name)
-            rtype = str(registry.get("type") or "")
-            if not registry_is_verified(rtype):
-                raise ValueError(
-                    f"registry '{service.registry_name}' has type '{rtype}' whose "
-                    f"destination format is not live-verified yet "
-                    f"(verified: {sorted(VERIFIED_REGISTRY_TYPES)}); refusing to "
-                    "publish — run the probe validation first (design §3.2)"
-                )
-            destination = service.gateway_destination(
-                registry_type=rtype, registry_name=service.registry_name
-            )
+        destination = self._destination(service)
+        service_name, service_port = split_destination(destination)
+        spec = RouteSpec(
+            name=service.ingress_name,
+            path=service.resolved_mcp_path,
+            service_name=service_name,
+            service_port=service_port,
+        )
+
+        tool_entries = [build_plugin_tool(t) for t in tools if t.enabled]
+        mcp_action: str = "set" if tool_entries else "cleared"
+        ext_config = copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)
+
         detail: dict[str, Any] = {
-            "ingress": {
-                "dataId": f"ingresses.{service.ingress_name}",
-                "content": build_ingress_yaml(service, destination=destination),
+            "route": {
+                "name": spec.name,
+                "path": spec.path,
+                "service": {"name": spec.service_name, "port": spec.service_port},
+                "action": None,
             },
+            "plugins": {"ext-auth": "set", "mcp-server": mcp_action},
             "acl": dict(acl_map),
         }
-
-        plugin_raw = self._client.get_config("wasmplugins.mcp-server")
-        ext_raw = self._client.get_config("wasmplugins.ext-auth")
-        if plugin_raw is None or ext_raw is None:
-            raise RuntimeError("wasmplugins.mcp-server / ext-auth not found in nacos")
-
-        plugin_cfg = json.loads(plugin_raw)
-        merge_plugin_rule(plugin_cfg, service, tools)
-        detail["mcp_server"] = {
-            "dataId": "wasmplugins.mcp-server",
-            "content": json.dumps(plugin_cfg, ensure_ascii=False, indent=2),
-        }
-
-        ext_cfg = json.loads(ext_raw)
-        merge_ext_auth_rule(ext_cfg, service)
-        detail["ext_auth"] = {
-            "dataId": "wasmplugins.ext-auth",
-            "content": json.dumps(ext_cfg, ensure_ascii=False, indent=2),
-        }
+        existing = self._gateway.get_route(spec.name)
+        route_created = existing is None
+        detail["route"]["action"] = "created" if route_created else "updated"
 
         if not dry_run:
-            # order matters — the mirror image of unpublish (round-2 N4):
-            # write the COVERAGE first (ext-auth → plugin → hub ACL), the
-            # ROUTE last. If a middle step fails, the failure mode is "no
-            # route yet, everything else intact" (safe no-op). The previous
-            # order (ingress first) failed into "route live, ext-auth rule
-            # not yet written" = an unauthenticated proxy to the backend —
-            # exactly the state unpublish's ordering exists to avoid.
             self._fence(fence)
-            self._client.publish_config("wasmplugins.ext-auth", detail["ext_auth"]["content"])
-            self._fence(fence)
-            self._client.publish_config("wasmplugins.mcp-server", detail["mcp_server"]["content"])
-            self._fence(fence)
-            # hub ACL：分发通道而非存储——hub watcher 轮询此 dataId 热更新
-            self._fence(fence)
-            self._client.publish_config(
-                self._acl_data_id, json.dumps(acl_map, ensure_ascii=False, indent=2)
-            )
-            self._fence(fence)
-            self._client.publish_config(
-                f"ingresses.{service.ingress_name}",
-                detail["ingress"]["content"],
-                content_type="yaml",
-            )
+            self._gateway.ensure_route(spec)
+            try:
+                self._fence(fence)
+                self._gateway.put_route_plugin(spec.name, "ext-auth", ext_config)
+                self._fence(fence)
+                if tool_entries:
+                    self._gateway.put_route_plugin(
+                        spec.name,
+                        "mcp-server",
+                        {
+                            "server": {"name": service.service_id, "type": "rest"},
+                            "tools": tool_entries,
+                        },
+                    )
+                else:
+                    # 无启用工具 → 清掉残留实例（旧数据面下等价于移除该服务的 rule）
+                    self._gateway.delete_route_plugin(spec.name, "mcp-server")
+                self._fence(fence)
+                # hub ACL：分发通道而非存储——hub watcher 轮询此 dataId 热更新
+                self._acl_client.publish_config(
+                    self._acl_data_id, json.dumps(acl_map, ensure_ascii=False, indent=2)
+                )
+            except Exception:
+                # 补偿（coverage-first 不变量的载体）：刚创建的路由回滚删除，
+                # 失败终态回到"无路由"。Console 的 DELETE 级联清理实例规则。
+                if route_created:
+                    try:
+                        self._gateway.delete_route(spec.name)
+                    except Exception:  # noqa: BLE001 — 原异常优先，回滚失败仅记录
+                        logger.exception(
+                            "compensation failed: route %s may leak without coverage",
+                            spec.name,
+                        )
+                raise
         detail["written"] = not dry_run
         return detail
 
@@ -427,17 +384,17 @@ class CatalogPublisher:
         *,
         fence: Callable[[], None] | None = None,
     ) -> None:
-        """Re-distribute ONLY the hub ACL dataId (no ingress/plugin writes).
+        """Re-distribute ONLY the hub ACL dataId (no gateway writes).
 
         Review 2026-09-30 P1-4: an ACL-only edit (tenant resource-acl on an
-        mcp-services row) must reach the gateway — the hub hot-reloads this
+        mcp-services row) must reach the hub — the hub hot-reloads this
         dataId, so re-pushing just the projection converges within one
         watcher interval without a full re-publish. Idempotent nacos write;
         run under the shared publish lock (the projection covers ALL
         services).
         """
         self._fence(fence)
-        self._client.publish_config(
+        self._acl_client.publish_config(
             self._acl_data_id, json.dumps(acl_map, ensure_ascii=False, indent=2)
         )
 
@@ -449,77 +406,37 @@ class CatalogPublisher:
         dry_run: bool = False,
         fence: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
-        """Remove the service's route AND its coverage: drop the plugin rule,
-        shrink the ext-auth ingress array, delete the ingress dataId, and
-        (via ``remaining_acl``) retract the tools from hub's allow table.
+        """Remove the service's route AND its coverage: delete the route
+        first (Console cascades the route-scoped plugin instance rules —
+        verified live), then explicitly clear both plugin instances
+        (tolerating absence), and (via ``remaining_acl``) retract the tools
+        from hub's allow table.
 
-        ``remaining_acl`` is the recomputed global ACL after this service's
-        removal (caller-side, from the DB); written so hub drops the removed
-        tools from every role's allow list without a restart.
+        Order (round-2 N4, preserved): the ROUTE goes FIRST — if a later
+        step fails the failure mode is "route gone, everything else intact"
+        (safe no-op state), never "route live, authz gone".
         """
         detail: dict[str, Any] = {}
-        ingress_data_id = f"ingresses.{service.ingress_name}"
-
-        plugin_raw = self._client.get_config("wasmplugins.mcp-server")
-        ext_raw = self._client.get_config("wasmplugins.ext-auth")
-        if plugin_raw is None or ext_raw is None:
-            raise RuntimeError("wasmplugins.mcp-server / ext-auth not found in nacos")
-
-        plugin_cfg = json.loads(plugin_raw)
-        spec = plugin_cfg.setdefault("spec", {})
-        rules = spec.get("matchRules", [])
-        spec["matchRules"] = [
-            r for r in rules if service.ingress_name not in (r.get("ingress") or [])
-        ]
-        detail["mcp_server"] = {
-            "dataId": "wasmplugins.mcp-server",
-            "content": json.dumps(plugin_cfg, ensure_ascii=False, indent=2),
-        }
-
-        ext_cfg = json.loads(ext_raw)
-        kept_rules: list[dict[str, Any]] = []
-        for rule in ext_cfg.get("spec", {}).get("matchRules", []):
-            ingresses = rule.get("ingress") or []
-            if service.ingress_name in ingresses:
-                ingresses = [i for i in ingresses if i != service.ingress_name]
-            if isinstance(rule.get("ingress"), list) and not ingresses:
-                # drop fully-emptied rules (round-2 §5): ``ingress: []``
-                # semantics on higress are unverified — if it means
-                # "match everything", an emptied rule would put ext-auth on
-                # every route of the gateway. Deleting the rule is the safe
-                # interpretation; the next publish recreates it from the
-                # frozen template (round-4 §3, see merge_ext_auth_rule —
-                # without that rebuild this drop deadlocked all publishes).
-                continue
-            if isinstance(rule.get("ingress"), list):
-                rule["ingress"] = ingresses
-            kept_rules.append(rule)
-        ext_cfg["spec"]["matchRules"] = kept_rules
-        detail["ext_auth"] = {
-            "dataId": "wasmplugins.ext-auth",
-            "content": json.dumps(ext_cfg, ensure_ascii=False, indent=2),
-        }
+        route_name = service.ingress_name
+        detail["route_delete"] = {"name": route_name, "deleted": False}
+        detail["plugins"] = {"ext-auth": False, "mcp-server": False}
 
         if not dry_run:
-            # order matters (round-2 N4): remove the ROUTE FIRST — if a later
-            # step fails the failure mode is "route gone, everything else
-            # intact" (safe no-op state). The previous order (authz strip →
-            # route delete) failed into "route live, authz gone" = an
-            # unauthenticated proxy to the backend. The intermediate window
-            # where the route exists without coverage also disappears.
             self._fence(fence)
-            detail["ingress_delete"] = {
-                "dataId": ingress_data_id,
-                "deleted": self._client.delete_config(ingress_data_id),
-            }
+            detail["route_delete"]["deleted"] = self._gateway.delete_route(route_name)
             self._fence(fence)
-            self._client.publish_config("wasmplugins.mcp-server", detail["mcp_server"]["content"])
+            detail["plugins"]["ext-auth"] = self._gateway.delete_route_plugin(
+                route_name, "ext-auth"
+            )
             self._fence(fence)
-            self._client.publish_config("wasmplugins.ext-auth", detail["ext_auth"]["content"])
+            detail["plugins"]["mcp-server"] = self._gateway.delete_route_plugin(
+                route_name, "mcp-server"
+            )
             self._fence(fence)
             if remaining_acl is not None:
-                self._client.publish_config(
-                    self._acl_data_id, json.dumps(remaining_acl, ensure_ascii=False, indent=2)
+                self._acl_client.publish_config(
+                    self._acl_data_id,
+                    json.dumps(remaining_acl, ensure_ascii=False, indent=2),
                 )
         detail["written"] = not dry_run
         return detail

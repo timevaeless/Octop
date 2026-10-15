@@ -6895,9 +6895,9 @@
     "unpublishOk": "已下线",
     "loadFailed": "操作失败",
     "aclTitle": "ACL 投影（角色 → 工具）",
-    "ingressTitle": "ingress YAML",
-    "resourcesTitle": "下发资源",
-    "noIngress": "（无 YAML 输出）",
+    "routeTitle": "网关路由",
+    "pluginsTitle": "写入的插件实例",
+    "routeEmpty": "（无路由信息）",
     "logTime": "时间",
     "logAction": "动作",
     "logResult": "结果",
@@ -7038,8 +7038,8 @@
     "resultModalTitle": "发布结果",
     "resultBanner": "已下发到 Higress",
     "aclEmpty": "本次没有产生 ACL 投影",
-    "copyYaml": "复制 ingress YAML",
+    "copyRoute": "复制路由摘要",
     "resultRoleCount": "{{count}} 个角色",
-    "resultResourceCount": "{{count}} 个资源"
+    "resultPluginCount": "{{count}} 个插件"
   }
 }

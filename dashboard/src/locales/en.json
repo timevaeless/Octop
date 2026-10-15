@@ -6895,9 +6895,9 @@
     "unpublishOk": "Unpublished",
     "loadFailed": "Operation failed",
     "aclTitle": "ACL projection (role → tools)",
-    "ingressTitle": "ingress YAML",
-    "resourcesTitle": "Resources written",
-    "noIngress": "(no YAML output)",
+    "routeTitle": "Gateway route",
+    "pluginsTitle": "Plugin instances written",
+    "routeEmpty": "(no route info)",
     "logTime": "Time",
     "logAction": "Action",
     "logResult": "Result",
@@ -7038,8 +7038,8 @@
     "resultModalTitle": "Publish result",
     "resultBanner": "Pushed to Higress",
     "aclEmpty": "No ACL projection was produced",
-    "copyYaml": "Copy ingress YAML",
+    "copyRoute": "Copy route summary",
     "resultRoleCount": "{{count}} roles",
-    "resultResourceCount": "{{count}} resources"
+    "resultPluginCount": "{{count}} plugins"
   }
 }
