@@ -26,6 +26,16 @@ and :func:`append_catalog_assignable_items`
 Standalone module per user convention (extract, don't weave): upstream files
 carry one-to-three-line lazy hooks; deleting this module and the hooks
 restores the pre-feature behaviour verbatim.
+
+Offline cycle (2026-10-15): unpublish does NOT delete attachment rows any
+more — it marks them ``status='offline'``. The mount key
+(``custom__{instance_id}__mcp-{service_id}``) therefore survives an
+unpublish → publish round-trip, so experts keep the connector selected (the
+picker shows it, save-time validation accepts it) instead of degrading to
+「无权使用的连接器」. Only runtime mounting skips offline rows
+(:func:`catalog_shared_harness_configs`) — a dead gateway URL is never
+mounted while the service is down. Re-publish reactivates the rows via
+:func:`sync_service_attachments`; an explicit tenant detach still deletes.
 """
 
 from __future__ import annotations
@@ -56,6 +66,7 @@ __all__ = [
     "attach_service_to_org",
     "detach_service_from_org",
     "sync_service_attachments",
+    "mark_service_attachments_offline",
     "delete_service_attachments",
     "refine_catalog_mount_names",
     "append_catalog_assignable_items",
@@ -143,6 +154,10 @@ def attach_service_to_org(
             display_name=display_name,
             allowed_roles=list(svc.allowed_roles or []),
         )
+        if row.status != "active":
+            # Re-attach onto a row parked offline by an unpublish: revive it
+            # in place so the mount key (and every expert holding it) lives.
+            conn_repo.update_status(row.instance_id, "active")
         return {"action": "updated", "instance_id": row.instance_id}
     instance_id = new_ulid()
     conn_repo.create(
@@ -175,8 +190,10 @@ def sync_service_attachments(conn_svc: Any, conn_repo: Any, svc: Any) -> int:
     """One-way sync: catalog service → every tenant attachment of it.
 
     Re-encrypts the payload (URL/display_name may have changed with a
-    re-publish) and refreshes ``allowed_roles``. Returns the number of
-    attachments refreshed.
+    re-publish) and refreshes ``allowed_roles``. Rows parked offline by a
+    previous unpublish are reactivated here — the service is (back) live, so
+    the preserved mount keys remount with the fresh spec. Returns the number
+    of attachments refreshed.
     """
     rows = catalog_parent_rows(conn_repo, svc.service_id)
     if not rows:
@@ -197,11 +214,30 @@ def sync_service_attachments(conn_svc: Any, conn_repo: Any, svc: Any) -> int:
         conn_repo.update_metadata(
             row.instance_id, allowed_roles=list(svc.allowed_roles or [])
         )
+        if row.status != "active":
+            conn_repo.update_status(row.instance_id, "active")
     return len(rows)
 
 
+def mark_service_attachments_offline(conn_repo: Any, service_id: str) -> int:
+    """Park every tenant attachment of *service_id* (unpublish path).
+
+    Rows keep their ``instance_id`` / mount key / credentials — only the
+    status flips to ``offline`` — so a later re-publish (or re-attach) finds
+    the same row and experts never see their saved mount key die. Hard delete
+    stays the job of :func:`delete_service_attachments` (service deleted).
+    """
+    parked = 0
+    for row in catalog_parent_rows(conn_repo, service_id):
+        if row.status == "offline":
+            continue
+        conn_repo.update_status(row.instance_id, "offline")
+        parked += 1
+    return parked
+
+
 def delete_service_attachments(conn_repo: Any, service_id: str) -> int:
-    """Remove every tenant attachment (service deleted or unpublished)."""
+    """Remove every tenant attachment (service deleted)."""
     removed = 0
     for row in catalog_parent_rows(conn_repo, service_id):
         conn_repo.delete(row.instance_id)
@@ -237,6 +273,8 @@ def catalog_shared_harness_configs(
     except Exception:  # pragma: no cover - partial test doubles
         return configs
     for parent in parents:
+        if getattr(parent, "status", "active") != "active":
+            continue  # offline (service unpublished) — never mount a dead URL
         own = parent.user_id == user_id
         if not own:
             if authz is None or not parent.has_credentials:
@@ -305,6 +343,15 @@ def refine_catalog_mount_names(
     raw = {p.mcp_server_name for p in parents}
     kept = [n for n in names if n not in raw]
     kept.extend(catalog_shared_harness_configs(conn_svc, user_id, authz=authz))
+    # Offline rows (service unpublished): the mount key stays valid for
+    # save-time validation and the picker — the agent's default connector
+    # survives the offline window instead of degrading to 「无权使用的连接器」.
+    # Runtime mounting is what skips them (catalog_shared_harness_configs).
+    kept.extend(
+        harness_key_for_row(p)
+        for p in parents
+        if getattr(p, "status", "active") != "active"
+    )
     return sorted(kept)
 
 

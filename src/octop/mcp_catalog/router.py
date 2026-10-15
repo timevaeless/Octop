@@ -1166,6 +1166,16 @@ def publish_service(
         actor=user.username,
     )
     if not body.dry_run:
+        # T4 pluggable hook (octop.mcp_catalog.tenant_share): reactivate
+        # attachments parked offline by a previous unpublish (same one-way
+        # sync the service-edit path runs) so preserved mount keys remount.
+        try:
+            from octop.mcp_catalog.tenant_share import sync_service_attachments
+
+            conn_svc = _connector_service(server)
+            sync_service_attachments(conn_svc, conn_svc.catalog_attachment_repo(), svc)
+        except Exception:  # noqa: BLE001 — best-effort; the publish already landed
+            logger.exception("attachment reactivation failed for service %s", service_id)
         # T4 pluggable hook (octop.infra.agents.publish_refresh): drop the
         # stale tool-schema cache + rebuild mounting agents after republish.
         from octop.infra.agents.publish_refresh import schedule_refresh  # noqa: PLC0415
@@ -1217,22 +1227,25 @@ def unpublish_service(
             repo.update_service(service_id, {"status": "published"})
         raise HTTPException(status_code=502, detail=f"unpublish failed: {e}") from e
     repo.log_publish(service_id, action, "ok", {"written": detail["written"]}, actor=user.username)
-    # Unpublish tears the gateway endpoint down — the tenant attachments
-    # would mount a dead URL, so they are removed with it. Re-publishing
-    # means tenants attach again (explicit opt-in preserved).
+    # Unpublish tears the gateway endpoint down. Tenant attachments are
+    # parked offline (rows kept, mount keys stable) instead of deleted, so
+    # experts keep their default connector across an unpublish → publish
+    # cycle; re-publishing reactivates them (see tenant_share module doc).
     if not body.dry_run:
         try:
-            from octop.mcp_catalog.tenant_share import delete_service_attachments
+            from octop.mcp_catalog.tenant_share import mark_service_attachments_offline
 
-            removed = delete_service_attachments(
+            parked = mark_service_attachments_offline(
                 _connector_service(server).catalog_attachment_repo(), service_id
             )
-            if removed:
+            if parked:
                 logger.info(
-                    "unpublish detached %d tenant attachment(s) of %s", removed, service_id
+                    "unpublish parked %d tenant attachment(s) of %s offline",
+                    parked,
+                    service_id,
                 )
         except Exception:  # noqa: BLE001 — gateway state already flipped
-            logger.exception("attachment cleanup failed for service %s", service_id)
+            logger.exception("attachment offline-park failed for service %s", service_id)
         # T4 pluggable hook (octop.infra.agents.publish_refresh): rebuild
         # agents still mounting the now-dead URL so their tool set drops it.
         from octop.infra.agents.publish_refresh import schedule_refresh  # noqa: PLC0415

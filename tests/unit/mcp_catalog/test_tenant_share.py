@@ -30,6 +30,7 @@ from octop.mcp_catalog.tenant_share import (
     catalog_shared_harness_configs,
     delete_service_attachments,
     detach_service_from_org,
+    mark_service_attachments_offline,
     sync_service_attachments,
 )
 
@@ -156,6 +157,56 @@ def test_sync_and_delete_service_attachments(env) -> None:
 
     assert delete_service_attachments(conn_svc._repo, "svc-1") == 2
     assert conn_svc._repo.list_by_kind("custom-mcp:svc-1") == []
+
+
+# ----- offline cycle (2026-10-15): unpublish parks rows, publish revives -----
+
+
+def test_offline_park_keeps_keys_and_blocks_mounting(env) -> None:
+    _attach(env, "svc-1", ORG, owner_id=1)
+    _, _, conn_svc, _ = env
+
+    assert mark_service_attachments_offline(conn_svc._repo, "svc-1") == 1
+    row = conn_svc._repo.list_by_kind("custom-mcp:svc-1")[0]
+    assert row.status == "offline"
+    # runtime mounting skips the offline row — never mount a dead gateway URL
+    assert catalog_shared_harness_configs(conn_svc, 1, authz=None) == {}
+    assert conn_svc.custom_harness_configs(1) == {}
+    # but save-time validation and the picker still speak the stable key, so
+    # an expert's default connector survives the offline window (no
+    # 「无权使用的连接器」 degradation)
+    allowed = conn_svc.list_active_mcp_server_names(1)
+    assert len(allowed) == 1 and allowed[0].startswith("custom__")
+    assignable = conn_svc.list_assignable_instances_for_api(1)
+    assert allowed[0] in {i["mcp_server_name"] for i in assignable}
+    # toggle state: the explicit opt-in is preserved
+    assert catalog_service_attachments(conn_svc._repo, "svc-1", ORG)
+    # parking an already-offline service is a no-op
+    assert mark_service_attachments_offline(conn_svc._repo, "svc-1") == 0
+
+
+def test_publish_sync_reactivates_offline_attachments(env) -> None:
+    _attach(env, "svc-1", ORG, owner_id=1)
+    _, _, conn_svc, cat = env
+    mark_service_attachments_offline(conn_svc._repo, "svc-1")
+
+    svc = cat.get_service("svc-1")
+    assert sync_service_attachments(conn_svc, conn_svc._repo, svc) == 1
+    row = conn_svc._repo.list_by_kind("custom-mcp:svc-1")[0]
+    assert row.status == "active"
+    assert len(catalog_shared_harness_configs(conn_svc, 1, authz=None)) == 1
+
+
+def test_re_attach_after_offline_keeps_instance_id(env) -> None:
+    first = _attach(env, "svc-1", ORG)
+    _, _, conn_svc, _ = env
+    mark_service_attachments_offline(conn_svc._repo, "svc-1")
+
+    second = _attach(env, "svc-1", ORG)
+    assert second == {"action": "updated", "instance_id": first["instance_id"]}
+    row = conn_svc._repo.list_by_kind("custom-mcp:svc-1")[0]
+    assert row.status == "active"
+    assert row.instance_id == first["instance_id"]
 
 
 # ----- viewer mounting (catalog_shared_harness_configs) -----
