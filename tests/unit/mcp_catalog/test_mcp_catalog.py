@@ -2207,6 +2207,10 @@ def test_source_services_endpoint_dispatch(monkeypatch):
 
     from octop.mcp_catalog import router
 
+    # 2026-10-15 起 _NACOS_ADDR 缺省为空（nacos 退役形态）；nacos naming 分派
+    # 用例显式配置地址，另补「未配置 → 400」防护断言
+    monkeypatch.setenv("MCP_CATALOG_NACOS_ADDR", "http://unit-test-nacos:8848")
+    monkeypatch.setattr(router, "_NACOS_ADDR", "http://unit-test-nacos:8848")
     monkeypatch.setattr(router, "gateway_client_from_env", lambda: None)  # resolve_registry 已 stub
     monkeypatch.setattr(router, "resolve_registry",
                         lambda c, n: {"name": "nacos", "type": "nacos2",
@@ -2216,6 +2220,11 @@ def test_source_services_endpoint_dispatch(monkeypatch):
         services=["echo-demo"]))
     out = router.list_source_services("nacos", None)
     assert out == {"services": ["echo-demo"], "registry_type": "nacos2"}
+
+    monkeypatch.setattr(router, "_NACOS_ADDR", "")
+    with pytest.raises(HTTPException) as ei:
+        router.list_source_services("nacos", None)
+    assert ei.value.status_code == 400
 
     monkeypatch.setattr(router, "resolve_registry",
                         lambda c, n: {"name": "static-x", "type": "static", "domain": "h:1"})

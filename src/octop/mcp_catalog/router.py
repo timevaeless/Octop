@@ -32,6 +32,7 @@ from octop.mcp_catalog.publisher import (
     CatalogPublisher,
     build_plugin_tool,
     effective_tool_roles,
+    global_acl,
     prune_tools_to_service_roles,
     registry_is_verified,
     resolve_registry,
@@ -53,7 +54,26 @@ _TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,63}\Z")
 # the mcp_path must look like a plain URL path.
 _NACOS_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _MCP_PATH_RE = re.compile(r"^/[A-Za-z0-9_\-./]{0,254}\Z")
-_NACOS_ADDR = os.environ.get("MCP_CATALOG_NACOS_ADDR", "http://localhost:8848")
+# 阿里云 nacos 退役形态（2026-10-15 拍板）：MCP_CATALOG_NACOS_ADDR 未配置 →
+# 网关配置照常走 Console，mcp-hub ACL 分发改经 octop 内部端点（hub 拉取），
+# nacos 写入跳过（_NullAclClient）。缺省从 localhost 改为空——保留该缺省等于
+# 强制所有部署配 nacos 凭证（_nacos_creds fail-closed），与退役方向矛盾。
+_NACOS_ADDR = os.environ.get("MCP_CATALOG_NACOS_ADDR", "").strip()
+
+
+class _NullAclClient:
+    """ACL 分发通道 no-op 桩：无 nacos 时 hub 走 octop 内部端点拉取，
+    dataId 写入静默跳过（通道缺位 ≠ 配置错误，见 internal_acl.py）。"""
+
+    def publish_config(self, *args: Any, **kwargs: Any) -> None:  # noqa: D102
+        return None
+
+
+def _acl_client() -> Any:
+    """nacos 在配 → 真客户端（legacy 通道保留）；未配 → no-op 桩。"""
+    if not _NACOS_ADDR:
+        return _NullAclClient()
+    return NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
 
 
 def _nacos_creds() -> tuple[str, str]:
@@ -80,10 +100,9 @@ def _repo(server: Any) -> CatalogRepo:
 
 
 def _publisher() -> CatalogPublisher:
-    """网关配置走 Console 通道；nacos 客户端仅承载 mcp-hub ACL 分发通道."""
-    return CatalogPublisher(
-        gateway_client_from_env(), NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
-    )
+    """网关配置走 Console 通道；nacos 客户端仅承载 mcp-hub ACL 分发通道
+    （MCP_CATALOG_NACOS_ADDR 未配置时为 no-op 桩，hub 走 octop 拉取通道）."""
+    return CatalogPublisher(gateway_client_from_env(), _acl_client())
 
 
 @contextlib.contextmanager
@@ -136,22 +155,18 @@ def _global_acl(
     publish (review round-5 §2). unpublish passes ``tools=[]`` (no-op loop);
     reconcile passes the real tools of an already-published service (override
     equals the DB view, harmless).
-    The catalog DB is the source of truth; the nacos dataId the publisher
-    writes is a distribution channel that mcp-hub hot-reloads.
+    The catalog DB is the source of truth; the distribution channel (nacos
+    dataId legacy / octop internal endpoint) is what mcp-hub hot-reloads.
 
-    Single JOIN query (review round-2 §5) — the per-service loop was N+1 and
-    read a different snapshot per query, so a concurrent edit could yield an
-    ACL state that never existed.
+    The no-override base is ``publisher.global_acl`` (shared with the
+    internal ACL endpoint so both channels can never diverge).
     """
-    acl: dict[str, set[str]] = {}
-    for _sid, svc_roles, tool in repo.list_enabled_tools_for_acl(
-        exclude_service=svc.service_id if svc is not None else None
-    ):
-        # 033 inheritance + 2026-10-01 subset rule: explicit tool config is
-        # intersected with the service default (never widens it), empty falls
-        # back to the default
-        for role in effective_tool_roles(tool.allowed_roles, svc_roles):
-            acl.setdefault(role, set()).add(tool.tool_name)
+    acl: dict[str, set[str]] = {
+        role: set(tset)
+        for role, tset in global_acl(
+            repo, exclude_service=svc.service_id if svc is not None else None
+        ).items()
+    }
     if svc is not None and tools is not None:
         svc_default = list(svc.allowed_roles or [])
         for tool in tools:
@@ -590,6 +605,11 @@ def list_source_services(
     domain = str(entry.get("domain") or "")
     try:
         if rtype in ("nacos2", "nacos3"):
+            if not _NACOS_ADDR:
+                raise HTTPException(
+                    status_code=400,
+                    detail="MCP_CATALOG_NACOS_ADDR not configured — nacos naming unavailable",
+                )
             client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
             names = naming_mod.list_nacos_services(
                 client,
@@ -620,6 +640,11 @@ def get_source_instance(
     domain = str(entry.get("domain") or "")
     try:
         if rtype in ("nacos2", "nacos3"):
+            if not _NACOS_ADDR:
+                raise HTTPException(
+                    status_code=400,
+                    detail="MCP_CATALOG_NACOS_ADDR not configured — nacos naming unavailable",
+                )
             client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
             instance = naming_mod.nacos_instance(
                 client,

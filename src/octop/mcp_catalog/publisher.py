@@ -21,8 +21,9 @@ Higress 的配置存储选型。每个服务 = 一条路由 + 路由级插件实
 ``build_*`` / role 相关函数是纯函数（unit-testable）；``CatalogPublisher``
 编排 Console 调用与 mcp-hub ACL 分发，支持 dry-run。
 
-mcp-hub ACL（``mcphub.tool-acl.json``）是 hub watcher 轮询的**分发通道**，
-不是网关配置——仍走 nacos 客户端（``acl_client``），与本通道解耦。
+mcp-hub ACL 是 hub watcher 轮询的**分发通道**，不是网关配置——legacy 走
+nacos dataId（``acl_client``；``MCP_CATALOG_NACOS_ADDR`` 未配置时 no-op 桩），
+主通道为 octop 内部端点（``acl_channel`` 快照，hub 拉取），两者同源同失效。
 """
 
 from __future__ import annotations
@@ -38,6 +39,17 @@ from octop.mcp_catalog.models import McpServiceRow, McpToolRow
 from octop.mcp_catalog.sources import parse_service_sources
 
 logger = logging.getLogger(__name__)
+
+
+def _invalidate_acl_channel() -> None:
+    """ACL 快照缓存失效（publish/push_acl/unpublish 成功外写后调用）。
+
+    延迟导入：acl_channel.snapshot 反向延迟导入本模块的 ``global_acl``，
+    模块级双向导入会成环。
+    """
+    from octop.mcp_catalog import acl_channel  # noqa: PLC0415
+
+    acl_channel.invalidate()
 
 # v2 P2.3 gate (design §3.2): only registry types whose destination format is
 # live-verified may be published. 'nacos2' verified (echo-demo/summer-cmc live
@@ -234,6 +246,29 @@ def collect_acl_map(
     return dict(sorted(acl.items()))
 
 
+def global_acl(
+    repo: Any, *, exclude_service: str | None = None
+) -> dict[str, list[str]]:
+    """Role→tools projection across ALL published services' enabled tools.
+
+    Single JOIN query via ``repo.list_enabled_tools_for_acl`` (review round-2
+    §5: per-service loops were N+1 and could read divergent snapshots).
+    Consumers: the internal ACL endpoint (mcp-hub pull channel,方案A) serves
+    this as a cached snapshot; ``router._global_acl`` layers the in-flight
+    service override on top of it for publish/unpublish paths.
+    """
+    acl: dict[str, set[str]] = {}
+    for _sid, svc_roles, tool in repo.list_enabled_tools_for_acl(
+        exclude_service=exclude_service
+    ):
+        # 033 inheritance + 2026-10-01 subset rule: explicit tool config is
+        # intersected with the service default (never widens it), empty falls
+        # back to the default
+        for role in effective_tool_roles(tool.allowed_roles, svc_roles):
+            acl.setdefault(role, set()).add(tool.tool_name)
+    return {role: sorted(tset) for role, tset in sorted(acl.items())}
+
+
 class CatalogPublisher:
     def __init__(
         self,
@@ -359,10 +394,12 @@ class CatalogPublisher:
                     # 无启用工具 → 清掉残留实例（旧数据面下等价于移除该服务的 rule）
                     self._gateway.delete_route_plugin(spec.name, "mcp-server")
                 self._fence(fence)
-                # hub ACL：分发通道而非存储——hub watcher 轮询此 dataId 热更新
+                # hub ACL：分发通道而非存储——legacy 走 nacos dataId（无 nacos
+                # 形态为 no-op 桩），主通道是 octop 内部端点（acl_channel 快照）
                 self._acl_client.publish_config(
                     self._acl_data_id, json.dumps(acl_map, ensure_ascii=False, indent=2)
                 )
+                _invalidate_acl_channel()
             except Exception:
                 # 补偿（coverage-first 不变量的载体）：刚创建的路由回滚删除，
                 # 失败终态回到"无路由"。Console 的 DELETE 级联清理实例规则。
@@ -397,6 +434,7 @@ class CatalogPublisher:
         self._acl_client.publish_config(
             self._acl_data_id, json.dumps(acl_map, ensure_ascii=False, indent=2)
         )
+        _invalidate_acl_channel()
 
     def unpublish(
         self,
@@ -438,5 +476,6 @@ class CatalogPublisher:
                     self._acl_data_id,
                     json.dumps(remaining_acl, ensure_ascii=False, indent=2),
                 )
+                _invalidate_acl_channel()
         detail["written"] = not dry_run
         return detail
