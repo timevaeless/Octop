@@ -55,7 +55,10 @@ function suppressViteDisconnectReload(): Plugin {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   // Empty = same-origin; frontend and backend served together, no hardcoded host.
-  const apiBaseUrl = env.BASE_URL ?? "";
+  // Also used as the vite asset base for path-prefix deployments (e.g. BASE_URL=/octop
+  // behind nginx `location /octop/`): assets ship under /octop/... and
+  // import.meta.env.BASE_URL lets the router pick up the same prefix.
+  const apiBaseUrl = (env.BASE_URL ?? "").replace(/\/+$/, "");
   // Allow overriding the backend port via VITE_API_PORT env variable (default: 8088)
   const apiPort = process.env.VITE_API_PORT ?? env.VITE_API_PORT ?? "8088";
 
@@ -106,13 +109,20 @@ export default defineConfig(({ mode }) => {
               if (id.includes("react-dom")) return "vendor-react";
               if (id.includes("react-router")) return "vendor-react";
               if (/\/node_modules\/react\//.test(id)) return "vendor-react";
-              // Keep rc-* with antd in one chunk. Splitting rc-* into vendor-rc
-              // creates a circular chunk (vendor-rc ↔ vendor-antd) that breaks
-              // production with "Cannot access 'FastColor' before initialization".
-              if (id.includes("rc-")) return "vendor-antd";
-              if (id.includes("/antd/")) return "vendor-antd";
-              if (id.includes("antd-style")) return "vendor-antd";
-              if (id.includes("@ant-design")) return "vendor-antd";
+              // Everything antd-related MUST live in the same chunk as react.
+              // History (twice bitten): (1) rc-* in a separate vendor-rc chunk
+              // cycled with vendor-antd → "Cannot access 'FastColor' before
+              // initialization". (2) antd/@ant-design in vendor-antd while
+              // react core stayed in vendor-react cycled the other way —
+              // @ant-design/icons (vendor-antd) is imported from inside
+              // vendor-react, so whichever chunk is evaluated first pulls the
+              // other in too early and antd reads reactExports as undefined
+              // ("Cannot read properties of undefined (reading
+              // 'createContext')"). One chunk makes the cycle impossible.
+              if (id.includes("rc-")) return "vendor-react";
+              if (id.includes("/antd/")) return "vendor-react";
+              if (id.includes("antd-style")) return "vendor-react";
+              if (id.includes("@ant-design")) return "vendor-react";
               if (id.includes("@xterm")) return "vendor-xterm";
               // mermaid + deps are dynamically imported — skip manualChunks so
               // Vite generates async chunks automatically.
@@ -168,6 +178,7 @@ export default defineConfig(({ mode }) => {
       BASE_URL: JSON.stringify(apiBaseUrl),
       MOBILE: false,
     },
+    base: apiBaseUrl ? `${apiBaseUrl}/` : "/",
     plugins: [
       suppressViteDisconnectReload(),
       react(),
@@ -201,10 +212,12 @@ export default defineConfig(({ mode }) => {
             "assets/vendor-*.js",
             "assets/*.{css,woff2}",
           ],
-          // vendor-antd (incl. the ColorPicker color engine) exceeds the
-          // 2 MiB workbox default; raise the precache limit so it stays
-          // offline-available instead of silently skipped.
-          maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
+          // vendor-antd (incl. the ColorPicker color engine) and vendor-react
+          // exceed the 2 MiB workbox default; raise the precache limit so they
+          // stay offline-available instead of breaking the production build.
+          // (vite-plugin-pwa 0.21 throws at build time when a glob-matched
+          // asset exceeds this limit — vendor-react reached 3.91 MB.)
+          maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
           // FastAPI already serves the SPA fallback. A Workbox NavigationRoute
           // would Cache-First the old shell; use NetworkFirst below instead.
           navigateFallback: null,

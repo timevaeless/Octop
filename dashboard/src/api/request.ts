@@ -2,6 +2,16 @@ import { getApiUrl } from "./config";
 import i18n from "../i18n";
 import { markNavigatingAway } from "../utils/reloadOnStaleChunk";
 
+/**
+ * Router basename for full-page redirects (window.location bypasses
+ * BrowserRouter's basename). Empty for same-origin deployments.
+ */
+const ROUTER_BASE = (import.meta.env.BASE_URL || "/").replace(/\/$/, "");
+
+function appUrl(path: string): string {
+  return `${ROUTER_BASE}${path}`;
+}
+
 const AUTH_TOKEN_KEY = "auth_token";
 /** sessionStorage handoff for SSO redirects / popups (default = remember). */
 const AUTH_REMEMBER_PREF_KEY = "auth_remember_pref";
@@ -129,7 +139,7 @@ function handleSetupRequired(): void {
   }
   _redirectingToSetup = true;
   // Full reload drops any in-flight React state.
-  window.location.replace("/setup");
+  window.location.replace(appUrl("/setup"));
 }
 
 /** Wizard endpoints stay reachable while lockdown is active. */
@@ -323,7 +333,7 @@ function handleUnauthorized(): void {
   if (takenOver) return;
 
   markNavigatingAway();
-  window.location.replace("/login");
+  window.location.replace(appUrl("/login"));
 }
 
 /**

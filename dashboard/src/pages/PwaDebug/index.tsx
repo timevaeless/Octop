@@ -166,7 +166,7 @@ export default function PwaDebugPage() {
     }
 
     // ── 5. Manifest fetch ────────────────────────────────────────
-    fetch("/manifest.json")
+    fetch(`${import.meta.env.BASE_URL}manifest.json`)
       .then(async (res) => {
         const ct = res.headers.get("content-type") ?? "";
         let detail = `HTTP ${res.status}  Content-Type: ${ct}`;

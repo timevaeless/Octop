@@ -173,7 +173,10 @@ export default function LoginPage() {
       if (event.data.access_token) {
         setAuthToken(event.data.access_token, event.data.remember ?? true);
       }
-      window.location.replace(event.data.redirect || "/chat");
+      window.location.replace(
+        event.data.redirect ||
+          `${(import.meta.env.BASE_URL || "/").replace(/\/$/, "")}/chat`,
+      );
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
@@ -271,7 +274,9 @@ export default function LoginPage() {
       >
         <img
           src={
-            isDark ? "/logo_horizontal_white.png" : "/logo_horizontal_dark.png"
+            isDark
+              ? `${import.meta.env.BASE_URL}logo_horizontal_white.png`
+              : `${import.meta.env.BASE_URL}logo_horizontal_dark.png`
           }
           alt="Octop"
           style={{

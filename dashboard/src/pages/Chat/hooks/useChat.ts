@@ -23,6 +23,7 @@ import {
   type ContentBlock,
 } from "../../../utils/messageParser";
 import { normalizeComposerContext } from "../utils/chatMessages";
+import { isApiUrl, stripApiPrefix } from "../../../api/config";
 import { resolveMessageTimestampMs } from "../../../utils/formatMessageTime";
 import { inferKindFromNameAndMime } from "../utils/chatAttachments";
 import {
@@ -151,12 +152,14 @@ export function stripInlineImageMarkdown(
       const trimmedUrl = url.trim();
       if (attachmentUrls.has(trimmedUrl)) return "";
       if (alt && attachmentFilenames.has(alt)) return "";
-      // Workspace/file URLs are always served via attachments
+      // Workspace/file URLs are always served via attachments (accept both
+      // prefixed and legacy unprefixed forms).
+      const normUrl = stripApiPrefix(trimmedUrl);
       if (
-        trimmedUrl.startsWith("/api/workspace/") ||
-        (trimmedUrl.startsWith("/api/agents/") &&
-          (trimmedUrl.includes("/media/preview") ||
-            trimmedUrl.includes("/workspace/download")))
+        normUrl.startsWith("/api/workspace/") ||
+        (normUrl.startsWith("/api/agents/") &&
+          (normUrl.includes("/media/preview") ||
+            normUrl.includes("/workspace/download")))
       ) {
         return "";
       }
@@ -173,7 +176,7 @@ function isRenderableAttachmentUrl(url: string | undefined): boolean {
   if (trimmed.startsWith("workspace://")) return false;
   if (trimmed.startsWith("data:")) return true;
   if (trimmed.startsWith("blob:")) return true;
-  if (trimmed.startsWith("/api/")) return true;
+  if (isApiUrl(trimmed)) return true;
   if (trimmed.startsWith("http://") || trimmed.startsWith("https://"))
     return true;
   return false;

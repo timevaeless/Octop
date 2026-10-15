@@ -1,6 +1,33 @@
 declare const BASE_URL: string;
 
 /**
+ * Externally mounted API prefix, e.g. "/octop/api" when deployed behind
+ * `location /octop/` (BASE_URL=/octop at build time), otherwise "/api".
+ * URL constructors should use this; matchers should accept both this and the
+ * legacy bare "/api" form (stored/historical URLs may lack the prefix).
+ */
+export const API_PREFIX = `${BASE_URL || ""}/api`;
+
+/** The deploy path prefix itself (e.g. "/octop"), "" for same-origin. */
+export const DEPLOY_PREFIX = BASE_URL || "";
+
+/** True when *url* points at the octop API (with or without deploy prefix). */
+export function isApiUrl(url: string): boolean {
+  return url.startsWith(API_PREFIX) || url.startsWith("/api/");
+}
+
+/**
+ * Strip the deploy prefix (BASE_URL, e.g. "/octop") from an API URL so
+ * pattern matching sees the canonical "/api/..." form. Legacy unprefixed
+ * URLs pass through unchanged.
+ */
+export function stripApiPrefix(url: string): string {
+  return DEPLOY_PREFIX && url.startsWith(DEPLOY_PREFIX)
+    ? url.slice(DEPLOY_PREFIX.length)
+    : url;
+}
+
+/**
  * Get the full API URL with /api prefix
  * @param path - API path (e.g., "/models", "/skills")
  * @returns Full API URL (e.g., "http://localhost:8088/api/models" or "/api/models")

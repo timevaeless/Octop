@@ -5,9 +5,21 @@ from __future__ import annotations
 from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 
+from octop.api.common.public_base import base_path
+
 SSO_STATE_COOKIE = "octop_sso_state"
-SSO_COOKIE_PATH = "/api/auth"
 SSO_STATE_TTL_SECONDS = 600
+
+
+def _cookie_path() -> str:
+    """``Path`` scope for the state cookie, deploy-prefix aware.
+
+    The backend always sees unprefixed paths (the proxy strips the prefix),
+    but the browser only ever requests prefixed URLs — so the cookie ``Path``
+    must carry the deploy prefix or it is never sent back on the callback
+    (surfacing as ``oidc_error=state``).
+    """
+    return f"{base_path()}/api/auth"
 
 
 def request_is_https(request: Request) -> bool:
@@ -22,7 +34,7 @@ def set_sso_state_cookie(response: JSONResponse, request: Request, state: str) -
         SSO_STATE_COOKIE,
         state,
         max_age=SSO_STATE_TTL_SECONDS,
-        path=SSO_COOKIE_PATH,
+        path=_cookie_path(),
         httponly=True,
         secure=request_is_https(request),
         samesite="lax",
@@ -30,7 +42,7 @@ def set_sso_state_cookie(response: JSONResponse, request: Request, state: str) -
 
 
 def delete_sso_state_cookie(response: Response, request: Request) -> None:
-    response.delete_cookie(SSO_STATE_COOKIE, path=SSO_COOKIE_PATH, secure=request_is_https(request))
+    response.delete_cookie(SSO_STATE_COOKIE, path=_cookie_path(), secure=request_is_https(request))
 
 
 def cookie_state(request: Request) -> str | None:

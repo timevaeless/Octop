@@ -7,6 +7,7 @@ import {
   stripVirtualWorkspaceRoot,
   toWorkspaceApiPath,
 } from "./workspaceIoPath";
+import { API_PREFIX, stripApiPrefix } from "../api/config";
 
 export type ToolMediaItem = {
   url: string;
@@ -26,9 +27,11 @@ export function isDataUrl(url: string): boolean {
 
 /** URLs that require Authorization and must be fetched via requestBlob. */
 export function needsAuthBlobFetch(url: string): boolean {
-  const path = url.startsWith("http")
+  const rawPath = url.startsWith("http")
     ? new URL(url).pathname
     : url.split("?")[0];
+  // Stored URLs may predate a path-prefix deployment: normalize to "/api/...".
+  const path = stripApiPrefix(rawPath);
   if (path === "/api/workspace/media") return true;
   // Bridge agent ids contain ``:`` (or ``%3A``); ``[^/]+`` still matches.
   if (/^\/api\/agents\/[^/]+\/avatar$/.test(path)) return true;
@@ -56,7 +59,7 @@ export function agentMediaPreviewUrl(
     source: toMediaPreviewSource(source, { agentId, fromWorkspace: false }),
   });
   if (mimeType) params.set("mime_type", mimeType);
-  return `/api/agents/${encodeURIComponent(
+  return `${API_PREFIX}/agents/${encodeURIComponent(
     agentId,
   )}/media/preview?${params.toString()}`;
 }
@@ -223,7 +226,7 @@ export function workspaceDownloadUrl(
       pathParam = toWorkspaceRel(raw) || "";
     }
   }
-  return `/api/agents/${encodeURIComponent(
+  return `${API_PREFIX}/agents/${encodeURIComponent(
     agentId,
   )}/workspace/download?path=${encodeURIComponent(pathParam)}`;
 }
@@ -282,7 +285,7 @@ export function canonicalizeMediaApiUrl(
     const parsed = url.startsWith("http")
       ? new URL(url)
       : new URL(url, "http://octop.local");
-    const pathMatch = parsed.pathname.match(
+    const pathMatch = stripApiPrefix(parsed.pathname).match(
       /^\/api\/agents\/([^/]+)\/(media\/preview|workspace\/download)$/,
     );
     if (!pathMatch) return url;

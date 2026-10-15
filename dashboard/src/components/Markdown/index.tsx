@@ -24,6 +24,7 @@ import { loadMermaid } from "./mermaidLoader";
 import { HighlightedCode } from "./syntaxHighlight";
 import { useMathPlugins } from "./mathPlugins";
 import { stabilizeStreamingMarkdown } from "./stabilizeStreamingMarkdown";
+import { API_PREFIX, isApiUrl } from "../../api/config";
 import styles from "./index.module.less";
 
 /* ---- Mermaid block component ---- */
@@ -130,7 +131,7 @@ function resolveImageSrc(src: string): string {
   if (
     /^https?:\/\//i.test(src) ||
     src.startsWith("data:") ||
-    src.startsWith("/api/")
+    isApiUrl(src)
   ) {
     return src;
   }
@@ -149,7 +150,7 @@ function resolveImageSrc(src: string): string {
   const workspaceMatch = filePath.match(/[/\\]\.octop[/\\]workspace[/\\](.*)/);
   if (workspaceMatch) {
     const relPath = workspaceMatch[1].replace(/\\/g, "/");
-    return `/api/workspace/media?path=${encodeURIComponent(relPath)}`;
+    return `${API_PREFIX}/workspace/media?path=${encodeURIComponent(relPath)}`;
   }
 
   return src;

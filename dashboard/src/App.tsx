@@ -191,7 +191,10 @@ function App() {
     // `useTransitions` off: with router transitions on, React keeps the old
     // page mounted while a lazy route chunk downloads and never renders the
     // Suspense fallback, so a nav click looks like it did nothing.
-    <BrowserRouter useTransitions={false}>
+    <BrowserRouter
+      basename={import.meta.env.BASE_URL.replace(/\/$/, "") || undefined}
+      useTransitions={false}
+    >
       <GlobalErrorBoundary>
         <GlobalStyle />
         <ThemeProvider>

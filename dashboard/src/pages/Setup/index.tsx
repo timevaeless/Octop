@@ -259,8 +259,8 @@ export default function SetupPage() {
               <img
                 src={
                   isDark
-                    ? "/logo_horizontal_white.png"
-                    : "/logo_horizontal_dark.png"
+                    ? `${import.meta.env.BASE_URL}logo_horizontal_white.png`
+                    : `${import.meta.env.BASE_URL}logo_horizontal_dark.png`
                 }
                 alt="Octop"
                 className={styles.wizardHeaderLogo}

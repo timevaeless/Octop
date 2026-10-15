@@ -12,6 +12,11 @@ import path from "path";
  */
 export default defineConfig({
   plugins: [react()],
+  // Mirror vite.config.ts's compile-time defines: config.ts evaluates
+  // API_PREFIX at module load, so BASE_URL must exist in tests too.
+  define: {
+    BASE_URL: JSON.stringify(""),
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
