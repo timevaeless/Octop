@@ -2202,29 +2202,98 @@ def test_eureka_services_and_instance(monkeypatch):
     assert inst == {"ip": "h1", "port": 8081, "namespace": None, "group": None}
 
 
+class _ConsoleNamingStub:
+    """list_services stub with the LIVE-verified /v1/services shape (2.2.4)."""
+
+    def __init__(self, rows=None, fail=False):
+        self._rows = rows or []
+        self._fail = fail
+
+    def list_services(self):
+        if self._fail:
+            from octop.mcp_catalog.gateway_client import GatewayClientError
+
+            raise GatewayClientError("console down")
+        return list(self._rows)
+
+
+_CONSOLE_ROWS = [
+    {"name": "summer-laac.DEFAULT-GROUP.local.nacos", "namespace": "mcp",
+     "port": 48084, "endpoints": ["192.168.5.20"], "protocol": "HTTP"},
+    {"name": "summer-cmc.OTHER.nsx.nacos", "namespace": "mcp",
+     "port": 48088, "endpoints": ["10.0.0.9"], "protocol": "HTTP"},
+    {"name": "mcp-hub.dns", "namespace": "mcp",
+     "port": 8090, "endpoints": ["hub"], "protocol": "HTTP"},
+]
+
+
+def test_list_console_services_filters_by_group_and_namespace():
+    from octop.mcp_catalog import naming
+
+    client = _ConsoleNamingStub(rows=_CONSOLE_ROWS)
+    assert naming.list_console_services(client, namespace="local",
+                                        group="DEFAULT_GROUP") == ["summer-laac"]
+    # 其他 group/namespace 不串
+    assert naming.list_console_services(client, namespace="nsx",
+                                        group="OTHER") == ["summer-cmc"]
+    # dns/static 型不进 nacos 结果
+    assert naming.list_console_services(client, namespace="mcp",
+                                        group="x") == []
+
+
+def test_console_instance_exact_and_prefix_fallback():
+    from octop.mcp_catalog import naming
+
+    client = _ConsoleNamingStub(rows=_CONSOLE_ROWS)
+    inst = naming.console_instance(client, namespace="local",
+                                   group="DEFAULT_GROUP", service_name="summer-laac")
+    assert inst == {"ip": "192.168.5.20", "port": 48084,
+                    "namespace": "local", "group": "DEFAULT_GROUP"}
+    # 来源记录 group/namespace 漂移 → 前缀回退
+    inst = naming.console_instance(client, namespace="prd", group="summer",
+                                   service_name="summer-laac")
+    assert inst == {"ip": "192.168.5.20", "port": 48084,
+                    "namespace": "prd", "group": "summer"}
+
+
+def test_console_instance_no_endpoint_is_error():
+    from octop.mcp_catalog import naming
+
+    with pytest.raises(naming.NamingError, match="no live endpoint"):
+        naming.console_instance(
+            _ConsoleNamingStub(rows=[
+                {"name": "ghost.DEFAULT-GROUP.local.nacos", "port": 1,
+                 "endpoints": []}]),
+            namespace="local", group="DEFAULT_GROUP", service_name="ghost")
+
+
+def test_console_failure_translates_to_naming_error():
+    from octop.mcp_catalog import naming
+
+    with pytest.raises(naming.NamingError, match="console service list failed"):
+        naming.list_console_services(_ConsoleNamingStub(fail=True),
+                                     namespace="l", group="g")
+
+
 def test_source_services_endpoint_dispatch(monkeypatch):
     from fastapi import HTTPException
 
     from octop.mcp_catalog import router
 
-    # 2026-10-15 起 _NACOS_ADDR 缺省为空（nacos 退役形态）；nacos naming 分派
-    # 用例显式配置地址，另补「未配置 → 400」防护断言
-    monkeypatch.setenv("MCP_CATALOG_NACOS_ADDR", "http://unit-test-nacos:8848")
-    monkeypatch.setattr(router, "_NACOS_ADDR", "http://unit-test-nacos:8848")
-    monkeypatch.setattr(router, "gateway_client_from_env", lambda: None)  # resolve_registry 已 stub
+    # 2026-10-15 起 naming 查询走 Console 聚合视图（nacos2 直查退役——
+    # v3 admin API 与 MSE nacos2 不兼容）；stub 只喂 list_services
+    stub = _ConsoleNamingStub(rows=_CONSOLE_ROWS)
+    monkeypatch.setattr(router, "gateway_client_from_env", lambda: stub)
     monkeypatch.setattr(router, "resolve_registry",
                         lambda c, n: {"name": "nacos", "type": "nacos2",
                                       "nacos_namespace_id": "local",
                                       "nacos_group": "DEFAULT_GROUP"})
-    monkeypatch.setattr(router, "NacosConfigClient", lambda *a: _NacosNamingClient(
-        services=["echo-demo"]))
     out = router.list_source_services("nacos", None)
-    assert out == {"services": ["echo-demo"], "registry_type": "nacos2"}
+    assert out == {"services": ["summer-laac"], "registry_type": "nacos2"}
 
-    monkeypatch.setattr(router, "_NACOS_ADDR", "")
-    with pytest.raises(HTTPException) as ei:
-        router.list_source_services("nacos", None)
-    assert ei.value.status_code == 400
+    inst = router.get_source_instance("nacos", "summer-laac", None)
+    assert inst == {"instance": {"ip": "192.168.5.20", "port": 48084,
+                                 "namespace": "local", "group": "DEFAULT_GROUP"}}
 
     monkeypatch.setattr(router, "resolve_registry",
                         lambda c, n: {"name": "static-x", "type": "static", "domain": "h:1"})

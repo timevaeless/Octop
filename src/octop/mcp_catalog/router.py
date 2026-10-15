@@ -605,14 +605,11 @@ def list_source_services(
     domain = str(entry.get("domain") or "")
     try:
         if rtype in ("nacos2", "nacos3"):
-            if not _NACOS_ADDR:
-                raise HTTPException(
-                    status_code=400,
-                    detail="MCP_CATALOG_NACOS_ADDR not configured — nacos naming unavailable",
-                )
-            client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
-            names = naming_mod.list_nacos_services(
-                client,
+            # 2026-10-15 拍板：naming 查询走 Console 聚合视图（/v1/services，
+            # mcpbridge 权威投影）——不再直连 nacos（v3 admin API 与 MSE
+            # nacos2 不兼容，且退役形态下 octop 本就不配 nacos 地址）。
+            names = naming_mod.list_console_services(
+                gateway_client_from_env(),
                 namespace=str(entry.get("nacos_namespace_id") or "public"),
                 group=str(entry.get("nacos_group") or "DEFAULT_GROUP"),
             )
@@ -640,14 +637,9 @@ def get_source_instance(
     domain = str(entry.get("domain") or "")
     try:
         if rtype in ("nacos2", "nacos3"):
-            if not _NACOS_ADDR:
-                raise HTTPException(
-                    status_code=400,
-                    detail="MCP_CATALOG_NACOS_ADDR not configured — nacos naming unavailable",
-                )
-            client = NacosConfigClient(_NACOS_ADDR, *_nacos_creds())
-            instance = naming_mod.nacos_instance(
-                client,
+            # 与列表端点同通道：Console 聚合视图（见 list_source_services 注释）
+            instance = naming_mod.console_instance(
+                gateway_client_from_env(),
                 namespace=str(entry.get("nacos_namespace_id") or "public"),
                 group=str(entry.get("nacos_group") or "DEFAULT_GROUP"),
                 service_name=service_name,

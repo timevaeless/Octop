@@ -264,6 +264,19 @@ class HigressConsoleClient:
             raise GatewayClientError("console: /v1/service-sources 未返回列表")
         return data
 
+    def list_services(self) -> list[dict[str, Any]]:
+        """mcpbridge 聚合服务视图（实测 2.2.4）：``GET /v1/services`` →
+        ``[{name, namespace, port, version, endpoints[], protocol}]``。
+
+        name 形态（实测三型）：nacos 型 = ``{service}.{group}.{namespace}.nacos``，
+        dns/static 型 = ``{service}.{type}``；``endpoints`` 即健康实例地址列表
+        （无独立单服务详情端点——实测 404 语义，列表即权威视图）。
+        """
+        data = self._request("GET", "/v1/services")
+        if not isinstance(data, list):
+            raise GatewayClientError("console: /v1/services 未返回列表")
+        return data
+
 
 _CLIENT_CACHE: dict[tuple[str, str, str], HigressConsoleClient] = {}
 
