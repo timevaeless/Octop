@@ -446,3 +446,117 @@ def test_mcp_delegation_expiring_is_per_agent() -> None:
 
     # No agent context at all → store fallback only (old behavior).
     assert not AgentManager._mcp_delegation_expiring(mgr, 7, "hub")
+
+
+# ------------------------------------------------- stale-configured self-heal
+
+
+def _stale_agent(configured: dict, tool_names: tuple[str, ...] = ()) -> MagicMock:
+    agent = MagicMock()
+    agent._mcp_tool_name_set = frozenset(tool_names)
+    agent.config.mcp_server_configs = dict(configured)
+    agent.append_mcp_tools = MagicMock(
+        side_effect=lambda tools: setattr(
+            agent,
+            "_mcp_tool_name_set",
+            frozenset(getattr(t, "name", "") for t in tools) | agent._mcp_tool_name_set,
+        )
+    )
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_mcp_rebuilds_stale_instance() -> None:
+    """Instance built during a connector-change window: the requested key is
+    absent from the live configured set but alive in a fresh derivation →
+    prepare_chat_mcp must rebuild the agent once and mount the tools, instead
+    of letting the filter drop the key as "unknown" forever."""
+    from octop.infra.agents.manager import AgentManager
+
+    key = "custom__01M4Z7G2D9B617M1ZC5K5KS3FH__mcp-summer-laac"
+    spec = {
+        "transport": "streamable_http",
+        "url": "http://172.17.0.1/api/internal/mcp/summer-laac",
+        "headers": {"Authorization": "Bearer x"},
+    }
+    tool = MagicMock()
+    tool.name = f"{key}_search_dealers"
+
+    stale = _stale_agent(configured={"weknora__x": {}})  # window-frozen: no laac
+    healed = _stale_agent(configured={"weknora__x": {}, key: dict(spec)})
+
+    mgr = object.__new__(AgentManager)
+    mgr._mcp_tool_cache = {}
+    mgr._mcp_tool_cache_locks = {}
+    mgr._mcp_tool_cache_guard = asyncio.Lock()
+    mgr._paths = MagicMock(root=MagicMock())
+    mgr._connector_user_override = {}
+    mgr._config = MagicMock()
+
+    agents = iter([stale, healed])
+    mgr.get_agent = MagicMock(side_effect=lambda _aid: next(agents, healed))
+    mgr.get_row = MagicMock(return_value=MagicMock(user_id=None))
+    mgr._connector_uid_for = MagicMock(return_value=5)
+    mgr._repos = MagicMock()
+    mgr._connector_svc = MagicMock()
+    mgr._connector_svc.custom_harness_configs.return_value = {key: spec}
+    mgr._get_or_load_mcp_tools = AsyncMock(return_value=[tool])
+    mgr._reload_agent = AsyncMock()
+
+    fresh = {key: spec}
+    with (
+        patch(
+            "octop.infra.agents.manager.build_mcp_server_configs_for_user",
+            return_value=fresh,
+        ),
+        patch(
+            "octop.infra.agents.manager.resolve_authz_context",
+            return_value=MagicMock(),
+        ),
+    ):
+        failed = await mgr.prepare_chat_mcp("A1", [key], connector_user_id=5)
+
+    assert failed == []
+    mgr._reload_agent.assert_awaited_once_with("A1")
+    assert mgr._connector_user_override == {}  # override must not leak
+    healed.append_mcp_tools.assert_called_once()
+    assert healed.config.mcp_server_configs[key]["transport"] == "streamable_http"
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_mcp_skips_rebuild_when_key_configured() -> None:
+    """Key present in configured (tools merely unloaded) → the legacy mount
+    path handles it; no rebuild is fired."""
+    from octop.infra.agents.manager import AgentManager
+
+    key = "custom__X__mcp-svc"
+    spec = {"transport": "streamable_http", "url": "http://x/mcp"}
+    tool = MagicMock()
+    tool.name = f"{key}_t1"
+
+    agent = _stale_agent(configured={key: dict(spec)})  # key IS configured
+    mgr = object.__new__(AgentManager)
+    mgr._mcp_tool_cache = {}
+    mgr._mcp_tool_cache_locks = {}
+    mgr._mcp_tool_cache_guard = asyncio.Lock()
+    mgr._paths = MagicMock(root=MagicMock())
+    mgr._connector_user_override = {}
+    mgr._config = MagicMock()
+    mgr.get_agent = MagicMock(return_value=agent)
+    mgr.get_row = MagicMock(return_value=MagicMock(user_id=None))
+    mgr._connector_uid_for = MagicMock(return_value=5)
+    mgr._repos = MagicMock()
+    mgr._connector_svc = MagicMock()
+    mgr._connector_svc.custom_harness_configs.return_value = {key: spec}
+    mgr._get_or_load_mcp_tools = AsyncMock(return_value=[tool])
+    mgr._reload_agent = AsyncMock()
+
+    with patch(
+        "octop.infra.agents.manager.build_mcp_server_configs_for_user"
+    ) as fresh_mock:
+        failed = await mgr.prepare_chat_mcp("A1", [key], connector_user_id=5)
+
+    assert failed == []
+    fresh_mock.assert_not_called()
+    mgr._reload_agent.assert_not_awaited()
+    agent.append_mcp_tools.assert_called_once()

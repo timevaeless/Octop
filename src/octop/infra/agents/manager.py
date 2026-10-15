@@ -1821,6 +1821,72 @@ class AgentManager:
             )
             return []
 
+        # Stale-configured self-heal (connector-change window race): an agent
+        # instance rebuilt between a connector's delete and its re-attach
+        # carries a configured MCP key set frozen at that window — requested
+        # keys then read as "unknown" on every turn and nothing re-fires the
+        # rebuild. If a requested key is absent from the live configured set
+        # but present in a fresh derivation, the instance is stale: rebuild it
+        # once under this chat user's override, then re-evaluate. Failure to
+        # rebuild never aborts the turn (the legacy degraded path handles it).
+        if missing_tools and uid is not None:
+            configured_now = getattr(agent.config, "mcp_server_configs", None) or {}
+            stale = [n for n in missing_tools if n not in configured_now]
+            if stale:
+                try:
+                    authz = resolve_authz_context(
+                        self._repos.user_repo, self._repos.org_repo, uid
+                    )
+                    fresh = build_mcp_server_configs_for_user(
+                        svc=self._connector_svc,
+                        connector_repo=self._repos.connector_repo,
+                        user_id=uid,
+                        agent_id=agent_id,
+                        agent_user_id=row.user_id if row else None,
+                        config=self._config,
+                        authz=authz,
+                    )
+                    resurrectable = [n for n in stale if n in fresh]
+                except Exception:
+                    logger.exception(
+                        "prepare_chat_mcp agent=%s: stale-configured probe failed",
+                        agent_id,
+                    )
+                    resurrectable = []
+                if resurrectable:
+                    logger.warning(
+                        "prepare_chat_mcp agent=%s: configured MCP keys %s are stale "
+                        "(instance built during a connector-change window); rebuilding",
+                        agent_id,
+                        resurrectable,
+                    )
+                    self._connector_user_override[agent_id] = uid
+                    try:
+                        await self._reload_agent(agent_id)
+                        agent = self.get_agent(agent_id)
+                    except Exception:
+                        logger.exception(
+                            "prepare_chat_mcp agent=%s: stale-instance rebuild failed",
+                            agent_id,
+                        )
+                    finally:
+                        self._connector_user_override.pop(agent_id, None)
+                    tool_set = frozenset(getattr(agent, "_mcp_tool_name_set", ()) or ())
+                    missing_tools = [
+                        n
+                        for n in missing_tools
+                        if not any(t.startswith(f"{n}_") for t in tool_set)
+                    ]
+                    # the rebuild minted fresh delegated tokens — no refresh due
+                    expiring_tools = []
+                    if not missing_tools:
+                        logger.info(
+                            "prepare_chat_mcp agent=%s: rebuild restored %s",
+                            agent_id,
+                            resurrectable,
+                        )
+                        return []
+
         custom_configs: dict[str, Any] = {}
         if uid is not None:
             # Resolve the OWNER's authz: injected tools mount the owner's
