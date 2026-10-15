@@ -3472,6 +3472,17 @@ class AgentManager:
                 load_env_file(env_file_path(self._paths.root)),
             )
 
+        # T4 pluggable hook (octop.infra.agents.tool_deferral): progressive
+        # tool loading — mounted MCP tools defer behind a `tool_search`
+        # meta-tool instead of eager schema injection. Default on;
+        # opt out per agent (config_json["tool_search"]=false) or globally
+        # (OCTOP_TOOL_SEARCH_DEFAULT=off). No-op without mounted MCP servers.
+        from octop.infra.agents.tool_deferral import tool_search_middleware_for
+
+        _tool_search_mw = tool_search_middleware_for(cfg, mcp_server_configs)
+        if _tool_search_mw is not None:
+            agent_middleware.append(_tool_search_mw)
+
         skill_dirs: list[str] = []
         plugin_skills_disabled: set[str] = set()
         if not team_host:
