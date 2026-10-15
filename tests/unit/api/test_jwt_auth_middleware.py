@@ -38,6 +38,12 @@ def test_exempt_paths() -> None:
     assert is_jwt_exempt_path("/api/auth/invite/redeem")
     assert is_jwt_exempt_path("/api/docs")
     assert is_jwt_exempt_path("/api/openapi.json")
+    # 内部 ACL 端点：version 落在前缀豁免，裸全量路径必须精确豁免
+    # （2026-10-15 hub watcher 事故：裸路径漏豁免被 JWT 中间件 401）
+    assert is_jwt_exempt_path("/api/internal/acl")
+    assert is_jwt_exempt_path("/api/internal/acl/version")
+    assert is_jwt_exempt_path("/api/internal/acl/")
+    assert not is_jwt_exempt_path("/api/internal/acl-admin")
     assert not is_jwt_exempt_path("/api/auth/oidc/config")
     assert not is_jwt_exempt_path("/api/auth/oauth/providers/feishu")
     assert not is_jwt_exempt_path("/api/auth/oauth/bind/start")

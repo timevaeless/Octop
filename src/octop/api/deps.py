@@ -86,6 +86,10 @@ _JWT_EXEMPT_EXACT = (
     "/api/auth/invite/redeem",
     "/api/docs",
     "/api/openapi.json",
+    # 全量 ACL 端点（Bearer 委派密钥自鉴权）：裸路径不带尾斜杠，不落进
+    # _JWT_EXEMPT_PREFIXES 的 "/api/internal/acl/" 前缀（version 端点带后缀
+    # 被前缀盖住、裸路径没有——2026-10-15 hub watcher 拉全量 401 事故）
+    "/api/internal/acl",
 )
 
 
