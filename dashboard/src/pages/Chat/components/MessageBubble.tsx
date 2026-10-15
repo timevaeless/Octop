@@ -199,8 +199,8 @@ function RefreshableImage({
       <div
         aria-hidden
         style={{
-          width: 300,
-          height: 300,
+          width: 180,
+          height: 180,
           backgroundColor: "#f0f0f0",
           borderRadius: 8,
         }}
@@ -212,8 +212,8 @@ function RefreshableImage({
     return (
       <div
         style={{
-          width: 300,
-          height: 300,
+          width: 180,
+          height: 180,
           backgroundColor: "#fff1f0",
           borderRadius: 8,
           display: "flex",
@@ -236,8 +236,8 @@ function RefreshableImage({
       className={styles.messageImage}
       width="auto"
       style={{
-        maxWidth: 300,
-        maxHeight: 300,
+        maxWidth: 180,
+        maxHeight: 180,
         borderRadius: 8,
         objectFit: "contain",
       }}
