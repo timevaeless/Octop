@@ -68,3 +68,36 @@ def test_validate_https_url_accepts_public_host() -> None:
         validate_https_url("https://mcp.notion.com/.well-known/oauth-authorization-server")
         == "https://mcp.notion.com/.well-known/oauth-authorization-server"
     )
+
+
+def test_non_rfc1918_intranet_default_public(monkeypatch: pytest.MonkeyPatch) -> None:
+    """172.11.x is NOT RFC1918 private (only 172.16-31) — public by default."""
+    monkeypatch.delenv("OCTOP_PRIVATE_CIDRS", raising=False)
+    assert is_private_or_local_host("172.11.2.243") is False
+
+
+def test_extra_private_cidrs_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCTOP_PRIVATE_CIDRS", "172.11.0.0/16")
+    assert is_private_or_local_host("172.11.2.243") is True
+    assert is_private_or_local_host("172.12.0.1") is False
+    assert is_private_or_local_host("172.16.1.1") is True  # RFC1918 still works
+
+
+def test_extra_private_cidrs_bare_ip(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCTOP_PRIVATE_CIDRS", "172.11.2.243")
+    assert is_private_or_local_host("172.11.2.243") is True
+    assert is_private_or_local_host("172.11.2.244") is False
+
+
+def test_extra_private_cidrs_invalid_entries_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bad entry is skipped (warned), valid ones still apply — fail-open per entry."""
+    monkeypatch.setenv("OCTOP_PRIVATE_CIDRS", "not-a-cidr, 172.11.0.0/16")
+    assert is_private_or_local_host("172.11.2.243") is True
+    assert is_private_or_local_host("mcp.example.com") is False
+
+
+def test_extra_private_cidrs_empty_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OCTOP_PRIVATE_CIDRS", " , ")
+    assert is_private_or_local_host("8.8.8.8") is False

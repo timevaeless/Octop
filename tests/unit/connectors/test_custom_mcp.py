@@ -149,6 +149,28 @@ def test_rejects_public_http_and_allows_lan():
         assert spec["url"] == url
 
 
+def test_non_rfc1918_intranet_http_via_private_cidrs_env(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """172.11.x is public per RFC1918; OCTOP_PRIVATE_CIDRS opts it in as LAN."""
+    from octop.infra.errors import ErrorCode, OctopError
+
+    monkeypatch.delenv("OCTOP_PRIVATE_CIDRS", raising=False)
+    with pytest.raises(OctopError) as http_exc:
+        normalize_server_spec(
+            "intranet",
+            {"transport": "streamable_http", "url": "http://172.11.2.243/api/v1"},
+        )
+    assert http_exc.value.code is ErrorCode.CONNECTOR_MCP_HTTPS_REQUIRED
+
+    monkeypatch.setenv("OCTOP_PRIVATE_CIDRS", "172.11.0.0/16")
+    spec = normalize_server_spec(
+        "intranet",
+        {"transport": "streamable_http", "url": "http://172.11.2.243/api/v1"},
+    )
+    assert spec["url"] == "http://172.11.2.243/api/v1"
+
+
 def test_allows_loopback_http_and_https():
     for url in (
         "http://localhost:8080/mcp",

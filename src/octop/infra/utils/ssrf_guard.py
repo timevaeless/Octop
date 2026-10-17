@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import logging
+import os
 import socket
 import typing
 from urllib.parse import urlparse, urlunparse
@@ -11,6 +13,8 @@ from urllib.parse import urlparse, urlunparse
 import httpx
 from httpcore._backends.auto import AutoBackend
 from httpcore._backends.base import SOCKET_OPTION, AsyncNetworkStream
+
+logger = logging.getLogger(__name__)
 
 
 class UnsafeOutboundUrl(ValueError):
@@ -27,12 +31,43 @@ _LOCAL_HOSTNAMES = frozenset(
 )
 _LOCAL_HOST_SUFFIXES = (".local", ".localhost", ".internal")
 
+# Operator-declared extra "private" ranges (OCTOP_PRIVATE_CIDRS, comma-separated
+# CIDRs or bare IPs). Intranets sometimes run on technically-public ranges
+# (e.g. 172.11.0.0/16); this opt-in widens only the local/LAN classification
+# below — it never relaxes the public-side SSRF guard (validate_https_url*).
+_EXTRA_PRIVATE_CIDRS_ENV = "OCTOP_PRIVATE_CIDRS"
+
+
+def extra_private_networks() -> tuple[ipaddress._BaseNetwork, ...]:
+    """Parse ``OCTOP_PRIVATE_CIDRS`` on each call (test-friendly, no cache).
+
+    Invalid entries are skipped with a warning so a bad config can never
+    silently widen (or crash) the guard.
+    """
+    raw = os.environ.get(_EXTRA_PRIVATE_CIDRS_ENV, "")
+    if not raw.strip():
+        return ()
+    networks: list[ipaddress._BaseNetwork] = []
+    for part in raw.split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(text, strict=False))
+        except ValueError:
+            logger.warning(
+                "ignoring invalid %s entry: %r", _EXTRA_PRIVATE_CIDRS_ENV, text
+            )
+    return tuple(networks)
+
 
 def is_private_or_local_host(host: str) -> bool:
     """True for loopback / RFC1918 / link-local literals and well-known local names.
 
     Used by MCP connector URL validation so self-hosted LAN endpoints are allowed
     without weakening the outbound SSRF guard used for OAuth / provider probes.
+    Operator-declared intranet ranges (``OCTOP_PRIVATE_CIDRS``) are honored too,
+    so intranets on non-RFC1918 ranges (e.g. 172.11.0.0/16) can use HTTP.
     """
     normalized = host.lower().rstrip(".")
     if not normalized:
@@ -45,7 +80,9 @@ def is_private_or_local_host(host: str) -> bool:
         addr = ipaddress.ip_address(normalized)
     except ValueError:
         return False
-    return addr.is_loopback or addr.is_private or addr.is_link_local
+    if addr.is_loopback or addr.is_private or addr.is_link_local:
+        return True
+    return any(addr in network for network in extra_private_networks())
 
 
 def _parse_https_host(url: str) -> tuple[str, int | None]:
