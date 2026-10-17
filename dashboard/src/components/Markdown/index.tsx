@@ -9,10 +9,10 @@ import {
   type ReactNode,
   type AnchorHTMLAttributes,
   type TableHTMLAttributes,
-  type ImgHTMLAttributes,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Image as AntdImage } from "antd";
 import { useTranslation } from "react-i18next";
 import {
   AuthFileDownloadLink,
@@ -160,8 +160,12 @@ function resolveImageSrc(src: string): string {
 function MarkdownImage({
   src,
   alt,
-  ...props
-}: { src?: string; alt?: string } & ImgHTMLAttributes<HTMLImageElement>) {
+  title,
+}: {
+  src?: string;
+  alt?: string;
+  title?: string;
+}) {
   const resolved = resolveImageSrc(src || "");
   const [imgSrc, setImgSrc] = useState(resolved);
   const failed = useRef(false);
@@ -182,14 +186,25 @@ function MarkdownImage({
     );
   }
 
+  // antd Image gives every markdown image the same click-to-preview
+  // lightbox as user-sent images (MessageBubble). Size caps + centering
+  // live in .imageBlock / the inline style below.
   return (
-    <img
-      src={imgSrc}
-      alt={alt}
-      onError={handleError}
-      style={{ maxWidth: "100%", borderRadius: 8 }}
-      {...props}
-    />
+    <div className={styles.imageBlock}>
+      <AntdImage
+        src={imgSrc}
+        alt={alt}
+        title={title}
+        onError={handleError}
+        style={{
+          maxWidth: "100%",
+          maxHeight: 360,
+          width: "auto",
+          height: "auto",
+          borderRadius: 8,
+        }}
+      />
+    </div>
   );
 }
 
@@ -430,12 +445,13 @@ const Markdown = memo(function Markdown({
           img({
             src,
             alt,
-            ...props
+            title,
           }: {
             src?: string;
             alt?: string;
-          } & ImgHTMLAttributes<HTMLImageElement>) {
-            return <MarkdownImage src={src} alt={alt} {...props} />;
+            title?: string;
+          }) {
+            return <MarkdownImage src={src} alt={alt} title={title} />;
           },
         }}
       >

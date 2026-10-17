@@ -79,10 +79,9 @@
     margin: 1em 0;
   }
 
-  img {
-    max-width: 100%;
-    border-radius: 6px;
-  }
+  /* Markdown images are rendered by <MarkdownImage> (antd Image wrapped in
+     .imageBlock); the legacy img rule was absorbed into that component so
+     sizing/centering has a single source of truth. */
 
   a {
     color: var(--fn-primary);
@@ -90,6 +89,20 @@
     &:hover {
       text-decoration: underline;
     }
+  }
+}
+
+/* ---- Markdown image block ---- */
+/* Block wrapper gives the image breathing room from surrounding text.
+   Left-aligned by default (no centering); the inner <img> is an antd Image
+   (click-to-preview); size caps live on the component's inline style. */
+.imageBlock {
+  margin: 12px 0;
+
+  img {
+    max-width: 100%;
+    object-fit: contain;
+    cursor: zoom-in;
   }
 }
 
