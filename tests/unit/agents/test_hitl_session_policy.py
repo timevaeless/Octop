@@ -162,6 +162,10 @@ async def test_resume_hitl_binds_thread_scope() -> None:
     # No repos wired: default_mcp_servers resolves row=None → [] → no extras.
     manager._repos = SimpleNamespace(agent_repo=SimpleNamespace(get=lambda _aid: None))
     manager._history_backfills = {}
+    manager._reclaim_pending = set()
+    manager._reclaim_holds = {}
+    manager._reclaim_task = None
+    manager._reclaim_wake = None
     manager._invocation_waiters = {}
     manager._active_invocations = {}
     manager._thread_execution_locks = {}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
@@ -16,6 +17,33 @@ from octop.infra.db.repos._base import (
     optional_updates,
     # (roles_allow moved to octop.infra.users.resource_acl — T2 pluggable hook)
 )
+
+
+def _unix_ts(value: object) -> int:
+    """Coerce a DB timestamp to unix seconds.
+
+    ``agents.created_at`` / ``updated_at`` are INTEGER, but SQLite will store
+    a text datetime if one was written. Listing must not crash on that.
+    """
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    text = str(value).strip()
+    if not text:
+        return 0
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+    except ValueError:
+        return 0
 
 
 def _opt_str(r: DbRow, key: str) -> str | None:
@@ -96,8 +124,8 @@ class AgentRow:
             config_json=r["config_json"],
             last_state=r["last_state"],
             last_error=r["last_error"],
-            created_at=r["created_at"],
-            updated_at=r["updated_at"],
+            created_at=_unix_ts(r["created_at"]),
+            updated_at=_unix_ts(r["updated_at"]),
             icon=r["icon"],
             template_name=r["template_name"],
             is_shared=is_shared,
@@ -369,4 +397,6 @@ class AgentRepo:
 
     def delete(self, agent_id: str) -> None:
         with self._db.transaction() as conn:
+            # No foreign key. Thread and usage rows cascade from ``agents``.
+            conn.execute("DELETE FROM care_push_records WHERE agent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))

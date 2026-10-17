@@ -68,6 +68,8 @@ _JWT_EXEMPT_PREFIXES = (
     "/api/connectors/oauth/callback",
     "/api/internal/mcp/",
     "/api/internal/acl/",
+    # Short-lived download links: the unguessable token is the credential.
+    "/api/downloads/link/",
 )
 _JWT_EXEMPT_EXACT = (
     "/api/health",

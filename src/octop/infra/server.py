@@ -528,6 +528,7 @@ class OctopServer:
 
         with scoped_request(None, bypass=True):
             await registry.boot()
+            registry.schedule_idle_reclaim_sweep()
         await gateway.refresh_media_backends()
 
         user_mgr = UserManager(self.services)

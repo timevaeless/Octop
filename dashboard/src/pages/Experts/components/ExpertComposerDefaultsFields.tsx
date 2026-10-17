@@ -8,6 +8,14 @@ import { knowledgeBasesApi } from "../../../api/modules/knowledgeBases";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { applyTemplateInstallGuard } from "./expertComposerDefaults";
 
+interface ExpertComposerDefaultsFieldsProps {
+  /**
+   * Expert being edited. Omit when creating: the new expert's owner is the
+   * caller, so the endpoint falls back to the caller's own scope.
+   */
+  agentId?: string | null;
+}
+
 /** Selected entries first (stable), so the dropdown opens on what's attached. */
 function sortSelectedFirst<T extends { value: string }>(
   options: T[],
@@ -21,13 +29,7 @@ function sortSelectedFirst<T extends { value: string }>(
 
 export default function ExpertComposerDefaultsFields({
   agentId,
-}: {
-  /**
-   * Expert being edited. Omit when creating: the new expert's owner is the
-   * caller, so the endpoint falls back to the caller's own scope.
-   */
-  agentId?: string;
-}) {
+}: ExpertComposerDefaultsFieldsProps) {
   const { t } = useTranslation();
   const currentUserId = useCurrentUser()?.id ?? null;
   const form = Form.useFormInstance();
@@ -65,7 +67,7 @@ export default function ExpertComposerDefaultsFields({
     // the owner, so offering anything wider would let the user pick an option
     // that then fails with "未找到知识库或文档。".
     knowledgeBasesApi
-      .listAssignable(agentId)
+      .listAssignable(agentId ?? undefined)
       .then((bases) => {
         if (!cancelled) {
           setKnowledgeBases(
@@ -91,11 +93,13 @@ export default function ExpertComposerDefaultsFields({
     // knowledge-base picker above. The endpoint already returns only connectors
     // that pass the save-time check, so no extra filtering happens here.
     connectorsApi
-      .listAssignable(agentId)
+      .listAssignable(agentId ?? undefined)
       .then((instances) => {
         if (cancelled) return;
         setConnectors(
-          (instances ?? []).map((item) => ({
+          (instances ?? [])
+            .filter((item) => item.status === "active" && item.has_credentials)
+            .map((item) => ({
             value: item.mcp_server_name,
             label:
               currentUserId !== null && item.owner_user_id !== currentUserId

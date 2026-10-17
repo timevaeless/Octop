@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from octop.ext.patches import (
     install_all,
     registered_patches,
 )
+from octop.infra.errors import ErrorCode
 
 
 # ---------------------------------------------------------------------------
@@ -163,21 +165,32 @@ async def test_install_all_applies_checkpointer_warmup_pilot(monkeypatch: pytest
 
     harness, state = _warmable_harness()
     manager = object.__new__(AgentManager)
+    # Upstream 1.0.2b8 resolves the row first (store fallback afterwards); the
+    # stub only needs get_row to report "no row" so the harness path runs.
+    monkeypatch.setattr(
+        manager,
+        "_repos",
+        SimpleNamespace(agent_repo=SimpleNamespace(get=lambda _agent_id: None)),
+        raising=False,
+    )
     monkeypatch.setattr(
         manager, "get_agent", lambda agent_id: harness, raising=False
     )
 
-    assert await manager.delete_thread_checkpoint("a1", "t1") is True
+    # Upstream reshaped the method to ``-> None``; the warm-up before-patch
+    # contract is unchanged: setup() runs before adelete_thread.
+    assert await manager.delete_thread_checkpoint("a1", "t1") is None
     assert state["setup_calls"] == 1  # warm-up ran before deletion
     assert state["deleted"] is True
 
     # Non-running agent: hook must skip (get_agent raises OctopError) and the
-    # original method's own not-running path returns False.
+    # upstream method re-raises AGENT_NOT_FOUND (no store fallback without a row).
     def _missing(agent_id: str) -> Any:
-        raise OctopError("AGENT_NOT_FOUND", "gone")
+        raise OctopError(ErrorCode.AGENT_NOT_FOUND, "gone")
 
     monkeypatch.setattr(manager, "get_agent", _missing, raising=False)
-    assert await manager.delete_thread_checkpoint("a1", "t1") is False
+    with pytest.raises(OctopError):
+        await manager.delete_thread_checkpoint("a1", "t1")
 
 
 def test_registered_patches_exposes_the_pilot() -> None:
