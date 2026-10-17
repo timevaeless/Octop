@@ -11,7 +11,7 @@ import httpx
 from octop.infra.connectors.builder import normalize_weknora_base_url
 
 _MAX_RESULTS = 8
-_MAX_CHUNK_CHARS = 1200
+_MAX_CHUNK_CHARS = 3000
 
 TOOLS: list[dict[str, Any]] = [
     {
@@ -143,7 +143,7 @@ def _visible_knowledge_base_ids(creds: dict[str, Any]) -> list[str]:
 def _clip_passage(item: dict[str, Any]) -> dict[str, Any]:
     content = str(item.get("content") or "")
     clipped = content[:_MAX_CHUNK_CHARS]
-    return {
+    passage = {
         "knowledge_id": item.get("knowledge_id"),
         "knowledge_title": item.get("knowledge_title") or item.get("knowledge_filename"),
         "chunk_index": item.get("chunk_index"),
@@ -151,6 +151,11 @@ def _clip_passage(item: dict[str, Any]) -> dict[str, Any]:
         "content": clipped,
         "truncated": len(content) > len(clipped),
     }
+    # Pass through image metadata so agents can embed KB figures in answers.
+    images = item.get("image_info") or item.get("images")
+    if images:
+        passage["image_info"] = images
+    return passage
 
 
 def _list_knowledge_bases(creds: dict[str, Any]) -> dict[str, Any]:
@@ -179,13 +184,27 @@ def _search(creds: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
     if not ids:
         raise ValueError("no visible WeKnora knowledge bases")
     max_results = max(1, min(int(args.get("max_results") or _MAX_RESULTS), _MAX_RESULTS))
-    payload = _request(
-        creds,
-        "POST",
-        "/knowledge-search",
-        params={"resource_urls": "handle"},
-        body={"query": query, "knowledge_base_ids": ids},
-    )
+    try:
+        payload = _request(
+            creds,
+            "POST",
+            "/knowledge-search",
+            params={"resource_urls": "public"},
+            body={"query": query, "knowledge_base_ids": ids},
+        )
+    except ValueError as exc:
+        # KB-scoped API keys are rejected with 403 when direct links are
+        # requested; fall back to internal handles (matches the official
+        # dsh-weknora plugin behaviour).
+        if "HTTP 403" not in str(exc):
+            raise
+        payload = _request(
+            creds,
+            "POST",
+            "/knowledge-search",
+            params={"resource_urls": "handle"},
+            body={"query": query, "knowledge_base_ids": ids},
+        )
     passages = [_clip_passage(item) for item in _data_list(payload)[:max_results]]
     return {"query": query, "knowledge_base_ids": ids, "passages": passages}
 
