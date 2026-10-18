@@ -843,6 +843,8 @@
     "searchPlaceholder": "Search experts",
     "searchEmpty": "No matching experts",
     "totalLibrary": "{{count}} built-in expert(s)",
+    "rescanLibrary": "Re-scan the template library directory (new/updated templates without restart)",
+    "rescanDone": "Library re-scanned: {{count}} built-in expert(s)",
     "totalMarket": "{{count}} market expert(s)",
     "addFromLibrary": "+ Add from Built-in",
     "newExpert": "New expert",

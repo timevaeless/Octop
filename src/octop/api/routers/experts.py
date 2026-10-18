@@ -709,6 +709,35 @@ async def upgrade_library_expert_instances(
     return report.as_dict()
 
 
+@router.post(
+    "/experts/library/refresh",
+    summary="Re-scan the expert library directory (admin)",
+)
+async def refresh_expert_library(
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Re-scan bundled library roots so new/updated templates show without a restart.
+
+    Idempotent full re-scan (same call as process boot); only the library view
+    and future installs are affected — installed instances keep their copies.
+    """
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    catalog = getattr(server, "expert_catalog", None)
+    if catalog is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "expert catalog is not available")
+    catalog.refresh()
+    subagent_catalog = getattr(server, "subagent_catalog", None)
+    if subagent_catalog is not None:
+        subagent_catalog.refresh()
+    return {
+        "experts": len(catalog.list_summaries()),
+        "experts_total": len(catalog.list_summaries(include_market_cache=True)),
+        "subagents": len(getattr(subagent_catalog, "_subagents", {}) or {}),
+    }
+
+
 @router.delete(
     "/experts/published/{expert_id}",
     status_code=204,

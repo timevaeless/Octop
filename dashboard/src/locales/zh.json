@@ -843,6 +843,8 @@
     "searchPlaceholder": "搜索专家",
     "searchEmpty": "没有匹配的专家",
     "totalLibrary": "共 {{count}} 个内置专家",
+    "rescanLibrary": "重新扫描模板库目录（新增/更新的模板免重启生效）",
+    "rescanDone": "模板库已重新扫描：{{count}} 个内置专家",
     "totalMarket": "共 {{count}} 个市场专家",
     "addFromLibrary": "+ 从内置专家新建",
     "newExpert": "新建专家",

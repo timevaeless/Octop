@@ -24,6 +24,7 @@ import { message } from "@/utils/antdMessage";
 
 import {
   BookOpen,
+  FolderSync,
   GraduationCap,
   LayoutGrid,
   List,
@@ -385,6 +386,46 @@ export default function ExpertsPage() {
     [handleRefresh, refreshing, t],
   );
 
+  // Re-scan the server-side bundled library (admin): picks up new/updated
+  // template directories without restarting octop.
+  const [rescanning, setRescanning] = useState(false);
+  const handleRescanLibrary = useCallback(async () => {
+    setRescanning(true);
+    try {
+      const result = await request<{ experts: number; subagents: number }>(
+        "/experts/library/refresh",
+        { method: "POST" },
+      );
+      setExperts(await fetchExpertLibrary());
+      message.success(t("experts.rescanDone", { count: result.experts }));
+    } catch (err: unknown) {
+      message.error(
+        err instanceof Error ? err.message : t("experts.loadFailed"),
+      );
+    } finally {
+      setRescanning(false);
+    }
+  }, [t]);
+
+  const rescanButton = useMemo(() => {
+    if (currentUser?.role !== "admin") return null;
+    return (
+      <Tooltip title={t("experts.rescanLibrary")}>
+        <button
+          className={styles.toolbarIconBtn}
+          onClick={() => void handleRescanLibrary()}
+          disabled={rescanning}
+          type="button"
+        >
+          <FolderSync
+            size={14}
+            className={rescanning ? styles.spinning : undefined}
+          />
+        </button>
+      </Tooltip>
+    );
+  }, [currentUser, handleRescanLibrary, rescanning, t]);
+
   const toolbarSearch = useMemo(
     () => (
       <Input
@@ -708,7 +749,10 @@ export default function ExpertsPage() {
           <div className={styles.emptyHint}>
             {t("experts.emptyLibraryHint")}
           </div>
-          <div className={styles.emptyActions}>{refreshButton}</div>
+          <div className={styles.emptyActions}>
+            {rescanButton}
+            {refreshButton}
+          </div>
         </div>
       );
     }
@@ -761,6 +805,7 @@ export default function ExpertsPage() {
           </span>
           <div className={styles.gridToolbarRight}>
             {publishedExperts.length === 0 ? toolbarSearch : null}
+            {rescanButton}
             {refreshButton}
           </div>
         </div>
@@ -804,6 +849,7 @@ export default function ExpertsPage() {
     publishedExperts,
     refreshButton,
     refreshPublishedExperts,
+    rescanButton,
     t,
     toolbarSearch,
     visibleLibraryExperts,
