@@ -34,6 +34,7 @@ pre-split behaviour verbatim.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -41,8 +42,14 @@ from pydantic import BaseModel, Field
 
 from octop.api.deps import current_user, get_server
 from octop.api.routers.org_members import _require_org_admin
-from octop.infra.connectors.custom_mcp import resolve_acl_connector_parent
+from octop.infra.connectors.custom_mcp import (
+    is_custom_mcp_kind,
+    resolve_acl_connector_parent,
+    server_display_name,
+)
 from octop.infra.db.repos.tenant_roles import TenantRoleRepo, tenant_role_repo_for
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -355,6 +362,9 @@ async def list_tenant_resource_acl(
         rows = conn.execute(
             f"SELECT {id_col} AS id, {name_col} AS name, allowed_roles"
             + (", default_mcp_servers" if kind == "experts" else "")
+            # A custom-MCP row IS the owner's whole document, so the name
+            # column alone cannot identify it (see _custom_server_labels).
+            + (", kind, user_id" if kind == "connectors" else "")
             + f" FROM {table} WHERE org_id = ? {extra_where} ORDER BY {name_col}",
             params,
         ).fetchall()
@@ -370,6 +380,8 @@ async def list_tenant_resource_acl(
             # tenant MCP catalog advise on templates whose visible roles
             # exceed the referenced service's roles — read-only advisory.
             row["default_mcp_servers"] = _parse_roles(r["default_mcp_servers"])
+        elif kind == "connectors" and is_custom_mcp_kind(str(r["kind"])):
+            row["server_names"] = _custom_server_labels(server, r["user_id"])
         out.append(row)
     return out
 
@@ -384,6 +396,49 @@ def _parse_roles(raw: Any) -> list[str]:
     except (TypeError, ValueError):
         return []
     return [str(x) for x in parsed] if isinstance(parsed, list) else []
+
+
+def _acl_connector_service(server: Any) -> Any:
+    """ConnectorService over this server's repos (decryption needs the secrets)."""
+    from octop.infra.connectors.service import ConnectorService
+
+    services = server.services
+    return ConnectorService(
+        repo=services.connector_repo,
+        secret_repo=services.secret_repo,
+        settings_repo=services.settings_repo,
+        config=services.config,
+    )
+
+
+def _custom_server_labels(server: Any, owner_user_id: Any) -> list[str]:
+    """Server names inside one manual custom-MCP document — labels only.
+
+    A ``custom-mcp`` row is the owner's *whole* document and its
+    ``display_name`` is the same 「自定义 MCP」 for every document, so the name
+    column cannot tell two rows apart; what an operator actually recognizes is
+    the server key inside (``wren-summer``). Projected here for the ACL tab.
+
+    Name-only by construction: the decrypted specs also carry urls/headers and
+    credentials, none of which leave this function. An unreadable document
+    (rotated key, corrupt blob) or an incomplete service wiring degrades to no
+    labels instead of failing the page — the row then renders exactly as it did
+    before this projection existed.
+    """
+    try:
+        conn_svc = _acl_connector_service(server)
+        servers = conn_svc.get_custom_servers(int(owner_user_id))
+    except Exception:
+        logger.exception(
+            "resource-acl: custom MCP document unreadable (owner=%s)", owner_user_id
+        )
+        return []
+    labels = {
+        server_display_name(str(name), spec)
+        for name, spec in servers.items()
+        if isinstance(spec, dict)
+    }
+    return sorted(labels, key=str.casefold)
 
 
 def _load_acl_row(

@@ -147,6 +147,12 @@ export interface ResourceAclRow {
    * dormant — only the owner sees the resource regardless of ``allowed_roles``.
    */
   shared?: boolean;
+  /**
+   * Connectors only, custom-MCP documents: server keys stored inside the
+   * document. Their ``name`` is the same 「自定义 MCP」 for every document, so
+   * these keys are what actually identifies the connector.
+   */
+  server_names?: string[];
 }
 
 /**

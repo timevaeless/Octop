@@ -136,6 +136,7 @@ export default function ResourceAclTab({
             name: row.name,
             org_id: tenantOrgId,
             allowed_roles: row.allowed_roles,
+            server_names: row.server_names,
           })),
           aclExposed: true,
           orgExposed: true,
@@ -232,7 +233,7 @@ export default function ResourceAclTab({
     const needle = keyword.trim().toLowerCase();
     if (!needle) return list;
     return list.filter((row) =>
-      [row.name, row.id, row.org_id ?? "", ...row.allowed_roles]
+      [row.name, row.id, row.org_id ?? "", ...(row.server_names ?? []), ...row.allowed_roles]
         .join(" ")
         .toLowerCase()
         .includes(needle),
@@ -478,14 +479,38 @@ export default function ResourceAclTab({
                 {
                   title: t("adminRoles.acl.resource"),
                   dataIndex: "name",
-                  render: (name: string, record: ResourceAclRow) => (
-                    <div className={styles.cellStack}>
-                      <span>{name}</span>
-                      <Tooltip title={record.id}>
-                        <span className={styles.mono}>{record.id}</span>
-                      </Tooltip>
-                    </div>
-                  ),
+                  render: (name: string, record: ResourceAclRow) => {
+                    // Custom-MCP rows are whole documents whose stored name is
+                    // the same 「自定义 MCP」 for every one of them. The server
+                    // keys inside are the only thing that says which connector
+                    // this row is, so they lead and the document name becomes
+                    // the caption. Roles still apply to the whole document.
+                    const serverNames = record.server_names ?? [];
+                    if (serverNames.length === 0) {
+                      return (
+                        <div className={styles.cellStack}>
+                          <span>{name}</span>
+                          <Tooltip title={record.id}>
+                            <span className={styles.mono}>{record.id}</span>
+                          </Tooltip>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className={styles.cellStack}>
+                        <Tooltip title={serverNames.join(" · ")}>
+                          <span className={styles.serverNames}>
+                            {serverNames.join(" · ")}
+                          </span>
+                        </Tooltip>
+                        <Tooltip title={record.id}>
+                          <span className={styles.cellSecondary}>
+                            {`${name} · ${record.id}`}
+                          </span>
+                        </Tooltip>
+                      </div>
+                    );
+                  },
                 },
                 ...(tenantOrgId
                   ? []

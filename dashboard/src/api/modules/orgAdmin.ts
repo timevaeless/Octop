@@ -33,6 +33,10 @@ export interface TenantResourceAclRow {
   /** experts only: template connector refs (custom-mcp:{sid}__{instance}) —
    * advisory data for the tenant MCP catalog's role-mismatch hint. */
   default_mcp_servers?: string[];
+  /** connectors only, custom-MCP documents: the server keys stored inside the
+   * document. Every document's ``name`` is the same 「自定义 MCP」, so these
+   * are the only labels that identify which connector a row actually is. */
+  server_names?: string[];
 }
 
 const enc = encodeURIComponent;

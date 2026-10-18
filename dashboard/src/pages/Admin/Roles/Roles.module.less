@@ -113,6 +113,16 @@
   color: var(--fn-text-tertiary);
 }
 
+/* Server keys inside a custom-MCP document. Every such document stores the
+   same 「自定义 MCP」 as its display name, so these keys are the only
+   recognisable label — clipped rather than wrapped to keep the row height. */
+.serverNames {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Avatar + name/username stack used by the user list. */
 .userCell {
   display: flex;
