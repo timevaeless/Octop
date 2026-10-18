@@ -16,6 +16,7 @@ from octop.api.deps import get_server
 from octop.infra.connectors.gateway.protocol import handle_mcp_request
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.tenancy_context import scoped_request
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,12 @@ def _negotiate_initialize_result(body: dict[str, Any], resp: dict[str, Any]) -> 
     return resp
 
 
+# This endpoint is JWT-exempt (machine-to-machine; authenticated per-instance
+# via ``token``). No tenant scope is bound, so the RLS connector lookup would
+# fail closed for tenant AND platform rows (029 dropped ``org_id IS NULL``).
+# Bind a bounded platform bypass around the whole handler: row visibility is
+# restored, while the per-instance ``verify_internal_token`` check remains the
+# only authorization surface.
 @router.post("/internal/mcp/{kind}/{instance_id}")
 async def internal_mcp_post(
     kind: str,
@@ -55,45 +62,46 @@ async def internal_mcp_post(
     token: str = Query(...),
     server: Any = Depends(get_server),
 ) -> Response:
-    inst = server.services.repos.connector_repo.get(instance_id)
-    if inst is None or inst.kind != kind or inst.status != "active":
-        raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
+    with scoped_request(None, bypass=True):
+        inst = server.services.repos.connector_repo.get(instance_id)
+        if inst is None or inst.kind != kind or inst.status != "active":
+            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
 
-    svc = _service(server)
-    creds = svc.verify_internal_token(instance_id, token)
-    if creds is None:
-        raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
+        svc = _service(server)
+        creds = svc.verify_internal_token(instance_id, token)
+        if creds is None:
+            raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
 
-    try:
-        body = await request.json()
-    except json.JSONDecodeError as exc:
-        raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "invalid JSON body") from exc
-    if not isinstance(body, dict):
-        raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "expected JSON object")
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "expected JSON object")
 
-    method = str(body.get("method") or "")
-    if method == "notifications/initialized":
-        return Response(status_code=202)
+        method = str(body.get("method") or "")
+        if method == "notifications/initialized":
+            return Response(status_code=202)
 
-    session_id = request.headers.get(MCP_SESSION_HEADER)
-    if method == "initialize":
-        session_id = secrets.token_urlsafe(16)
+        session_id = request.headers.get(MCP_SESSION_HEADER)
+        if method == "initialize":
+            session_id = secrets.token_urlsafe(16)
 
-    if kind == "qcc":
-        resp = await svc.handle_qcc_request(instance_id, body)
-    else:
-        resp = await asyncio.to_thread(handle_mcp_request, kind=kind, creds=creds, body=body)
-    if not resp:
-        return Response(status_code=202)
+        if kind == "qcc":
+            resp = await svc.handle_qcc_request(instance_id, body)
+        else:
+            resp = await asyncio.to_thread(handle_mcp_request, kind=kind, creds=creds, body=body)
+        if not resp:
+            return Response(status_code=202)
 
-    resp = _negotiate_initialize_result(body, resp)
-    headers = {"content-type": "application/json"}
-    if session_id:
-        headers[MCP_SESSION_HEADER] = session_id
-    protocol = request.headers.get(MCP_PROTOCOL_HEADER)
-    if protocol:
-        headers[MCP_PROTOCOL_HEADER] = protocol
-    return JSONResponse(content=resp, headers=headers)
+        resp = _negotiate_initialize_result(body, resp)
+        headers = {"content-type": "application/json"}
+        if session_id:
+            headers[MCP_SESSION_HEADER] = session_id
+        protocol = request.headers.get(MCP_PROTOCOL_HEADER)
+        if protocol:
+            headers[MCP_PROTOCOL_HEADER] = protocol
+        return JSONResponse(content=resp, headers=headers)
 
 
 @router.get("/internal/mcp/{kind}/{instance_id}")
@@ -105,32 +113,33 @@ async def internal_mcp_get(
     server: Any = Depends(get_server),
 ) -> Response:
     """Streamable HTTP clients open a long-lived GET SSE channel after initialize."""
-    inst = server.services.repos.connector_repo.get(instance_id)
-    if inst is None or inst.kind != kind:
-        raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
+    with scoped_request(None, bypass=True):
+        inst = server.services.repos.connector_repo.get(instance_id)
+        if inst is None or inst.kind != kind:
+            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
 
-    svc = _service(server)
-    creds = svc.verify_internal_token(instance_id, token)
-    if creds is None:
-        raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
+        svc = _service(server)
+        creds = svc.verify_internal_token(instance_id, token)
+        if creds is None:
+            raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
 
-    if not request.headers.get(MCP_SESSION_HEADER):
-        return JSONResponse(
-            status_code=405,
-            content={"error": "missing mcp-session-id"},
+        if not request.headers.get(MCP_SESSION_HEADER):
+            return JSONResponse(
+                status_code=405,
+                content={"error": "missing mcp-session-id"},
+            )
+
+        async def _sse_keepalive() -> Any:
+            # Priming event so streamable-http clients attach successfully.
+            yield "event: message\ndata: \n\n"
+            while True:
+                await asyncio.sleep(3600)
+
+        return StreamingResponse(
+            _sse_keepalive(),
+            media_type="text/event-stream",
+            headers={"cache-control": "no-cache", "connection": "keep-alive"},
         )
-
-    async def _sse_keepalive() -> Any:
-        # Priming event so streamable-http clients attach successfully.
-        yield "event: message\ndata: \n\n"
-        while True:
-            await asyncio.sleep(3600)
-
-    return StreamingResponse(
-        _sse_keepalive(),
-        media_type="text/event-stream",
-        headers={"cache-control": "no-cache", "connection": "keep-alive"},
-    )
 
 
 @router.delete("/internal/mcp/{kind}/{instance_id}")
@@ -141,10 +150,11 @@ async def internal_mcp_delete(
     server: Any = Depends(get_server),
 ) -> Response:
     """Streamable HTTP clients may DELETE to end a session."""
-    inst = server.services.repos.connector_repo.get(instance_id)
-    if inst is None or inst.kind != kind:
-        raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
-    svc = _service(server)
-    if svc.verify_internal_token(instance_id, token) is None:
-        raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
-    return Response(status_code=204)
+    with scoped_request(None, bypass=True):
+        inst = server.services.repos.connector_repo.get(instance_id)
+        if inst is None or inst.kind != kind:
+            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, "instance not found")
+        svc = _service(server)
+        if svc.verify_internal_token(instance_id, token) is None:
+            raise OctopError(ErrorCode.AUTH_FAILED, "invalid internal token")
+        return Response(status_code=204)
