@@ -106,6 +106,40 @@ class TestMcpToolNameView:
         assert "_t" not in view
 
 
+class TestMcpToolNameViewSetAlgebra:
+    """Native tool-search mode intersects the view with visible tool names
+    (harness ``tool_search.py`` ``_prepare_native``: ``view & visible``) —
+    both operand orders must work and honour the prefix/eager semantics."""
+
+    def test_view_and_set(self) -> None:
+        view = _McpToolNameView(["custom__X__mcp-svc"])
+        result = view & {"custom__X__mcp-svc_queryDealer", "read_file"}
+        assert result == frozenset({"custom__X__mcp-svc_queryDealer"})
+
+    def test_set_and_view_reflected(self) -> None:
+        view = _McpToolNameView(["svc"])
+        result = {"svc_a", "other"} & view
+        assert result == frozenset({"svc_a"})
+
+    def test_eager_tools_excluded_from_intersection(self) -> None:
+        view = _McpToolNameView(["svc"], eager_tools=frozenset({"svc_hot"}))
+        result = view & {"svc_hot", "svc_lazy"}
+        assert result == frozenset({"svc_lazy"})
+
+    def test_intersection_is_frozenset(self) -> None:
+        view = _McpToolNameView(["svc"])
+        assert isinstance(view & {"svc_t"}, frozenset)
+        assert isinstance({"svc_t"} & view, frozenset)
+
+    def test_non_iterable_operand_yields_empty(self) -> None:
+        view = _McpToolNameView(["svc"])
+        assert view & 123 == frozenset()  # type: ignore[operator]
+
+    def test_no_servers_yields_empty_intersection(self) -> None:
+        view = _McpToolNameView([])
+        assert view & {"anything"} == frozenset()
+
+
 # ---------------------------------------------------------------- factory
 
 

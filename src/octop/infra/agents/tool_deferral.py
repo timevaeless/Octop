@@ -102,6 +102,20 @@ class _McpToolNameView:
             return False
         return name.startswith(self._prefixes)
 
+    def __and__(self, other: Any) -> frozenset[str]:
+        """Native-mode set algebra: harness intersects us with visible tools.
+
+        The view is a prefix *predicate*, not an enumerable set, so the
+        intersection must be computed by filtering ``other`` through
+        :meth:`__contains__` — never by iterating ``self``.
+        """
+        if not hasattr(other, "__iter__"):
+            return frozenset()
+        return frozenset(name for name in other if name in self)
+
+    def __rand__(self, other: Any) -> frozenset[str]:
+        return self & other
+
     def __bool__(self) -> bool:
         return True
 
