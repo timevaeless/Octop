@@ -67,6 +67,7 @@ from octop.infra.agents.experts.published_creation import (
 from octop.infra.agents.experts.published_creation import (
     unpublish_expert as unpublish_owned_expert,
 )
+from octop.infra.agents.experts.published_mount_names import rewrite_installer_mount_names
 from octop.infra.agents.experts.skillhub_market import (
     SkillHubMarketError,
     SkillHubMarketErrorKind,
@@ -793,14 +794,23 @@ async def install_published_expert(
     if body.mcp_servers is not None:
         mcp_body: list[str] | None = body.mcp_servers
     else:
-        mcp_body = _soft_filter(
-            list(row.default_mcp_servers),
-            {
-                str(s.get("mcp_server_name"))
-                for s in visible_mcp_servers(server.app_runtime.agent_registry, user.id)
-                if s.get("mcp_server_name")
-            },
-        )
+        mcp_body = list(row.default_mcp_servers)
+    # 2026-10-18 hook (pluggable: published_mount_names): a template stamps the
+    # PUBLISHER's mount names. Manual custom MCP servers mount as
+    # ``custom__<owner_parent>__<name>`` for their owner and as
+    # ``custom__<their_parent>__<name>`` for a tenant, so the raw default is
+    # unbindable for the installer — rewrite it onto the visible equivalent
+    # before validation. Shares the surrounding fail-fast rules: still-unknown
+    # names keep the explicit path's CONNECTOR_NOT_BOUND and the defaults
+    # path's soft filter.
+    visible_servers = {
+        str(s.get("mcp_server_name"))
+        for s in visible_mcp_servers(server.app_runtime.agent_registry, user.id)
+        if s.get("mcp_server_name")
+    }
+    mcp_body = rewrite_installer_mount_names(mcp_body, visible_servers)
+    if body.mcp_servers is None:
+        mcp_body = _soft_filter(mcp_body, visible_servers)
     if body.skill_package_ids is not None:
         pkg_body: list[str] | None = body.skill_package_ids
     else:
