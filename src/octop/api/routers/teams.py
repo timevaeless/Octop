@@ -78,7 +78,7 @@ async def create_team(
     # 2026-09-27 attribution rule (see creator_org_id): same stamping as the
     # expert-create path — without it the row inserts org_id=NULL and the
     # agents-table RLS WITH CHECK rejects it for tenant scopes.
-    from octop.infra.users.resource_attribution import creator_org_id  # noqa: PLC0415
+    from octop.infra.users.resource_attribution import creator_org_id_checked  # noqa: PLC0415
 
     spec = AgentCreateSpec(
         name=body.name.strip(),
@@ -94,7 +94,7 @@ async def create_team(
         config=body.config,
         member_ids=member_ids,
         mcp_servers=[],
-        org_id=creator_org_id(user),
+        org_id=creator_org_id_checked(user),
     )
     row = await server.app_runtime.agent_registry.create(spec)
     return cast(

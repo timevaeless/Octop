@@ -299,7 +299,7 @@ async def create_agent(
 ) -> dict[str, Any]:
     """Create a new agent from a template or custom config for the current user."""
     from octop.infra.agents.manager import AgentCreateSpec  # noqa: PLC0415
-    from octop.infra.users.resource_attribution import creator_org_id
+    from octop.infra.users.resource_attribution import creator_org_id_checked
 
     assert server.app_runtime is not None
     if isinstance(body.config, dict):
@@ -342,7 +342,7 @@ async def create_agent(
         # 2026-09-27 attribution rule (see creator_org_id): a platform admin
         # creates *unattributed* (admin-only until assigned on the
         # resource-acl face); a tenant user stamps their own tenant.
-        org_id=creator_org_id(user),
+        org_id=creator_org_id_checked(user),
     )
     row = await server.app_runtime.agent_registry.create(spec)
     return _row_dict(

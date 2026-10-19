@@ -16,7 +16,9 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["creator_org_id"]
+from octop.infra.errors import ErrorCode, OctopError
+
+__all__ = ["creator_org_id", "creator_org_id_checked"]
 
 
 def creator_org_id(user: Any) -> str | None:
@@ -29,3 +31,21 @@ def creator_org_id(user: Any) -> str | None:
     if getattr(user, "is_admin", False):
         return None
     return getattr(user, "org_id", None) or None
+
+
+def creator_org_id_checked(user: Any) -> str | None:
+    """``creator_org_id`` with a fail-fast guard for unattributed callers.
+
+    Migration 029 removed the ``org_id IS NULL`` branch from the RLS WITH
+    CHECK on the resource tables: an unattributed row is only writable
+    through the platform-admin bypass scope. A non-admin caller without a
+    tenant would therefore fail at INSERT time with a raw RLS
+    ``InsufficientPrivilege`` (HTTP 500); reject up front with an
+    actionable 403 instead (「无权限，请联系管理员归位」).
+    """
+    if not getattr(user, "is_admin", False) and getattr(user, "org_id", None) is None:
+        raise OctopError(
+            ErrorCode.USER_NOT_ATTRIBUTED,
+            "account has no tenant attribution; ask an administrator to assign one",
+        )
+    return creator_org_id(user)

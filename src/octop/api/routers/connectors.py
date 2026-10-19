@@ -654,10 +654,14 @@ async def put_custom_mcp(
     """Replace the user's custom MCP servers document and reload agents."""
     svc = _connector_service(server)
     # 2026-09-27 attribution hook (pluggable: resource_attribution).
-    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+    from octop.infra.users.resource_attribution import (
+        creator_org_id_checked as _creator_org_id_checked,
+    )
 
     try:
-        servers = svc.put_custom_servers(user.id, body.servers, org_id=_creator_org_id(user))
+        servers = svc.put_custom_servers(
+            user.id, body.servers, org_id=_creator_org_id_checked(user)
+        )
     except ConnectorNameTakenError as exc:
         _raise_name_taken(str(exc))
     except ValueError as exc:
@@ -830,7 +834,9 @@ async def create_instance(
 
     instance_id = new_ulid()
     # 2026-09-27 attribution hook (pluggable: resource_attribution).
-    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+    from octop.infra.users.resource_attribution import (
+        creator_org_id_checked as _creator_org_id_checked,
+    )
 
     repo.create(
         instance_id=instance_id,
@@ -842,7 +848,7 @@ async def create_instance(
         # 2026-09-27 attribution rule (pluggable: resource_attribution): a
         # platform admin creates *unattributed* (admin-only until assigned on
         # the resource-acl face); a tenant user stamps their own tenant.
-        org_id=_creator_org_id(user),
+        org_id=_creator_org_id_checked(user),
         config_json=build_instance_config_json(
             kind=body.kind,
             default_open=bool(body.default_open),

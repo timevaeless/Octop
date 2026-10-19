@@ -306,7 +306,9 @@ async def create_agent_from_skillhub_skillset(
     )
     customized_welcome = options.welcome_message is not None
     portrait_url = skillhub_portrait_url(item) or expert.summary.icon_url
-    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+    from octop.infra.users.resource_attribution import (
+        creator_org_id_checked as _creator_org_id_checked,
+    )
 
     spec = build_create_spec_from_expert(
         expert_id=item.expert_id,
@@ -321,7 +323,7 @@ async def create_agent_from_skillhub_skillset(
         # 2026-09-27 attribution rule (see creator_org_id): same stamping as
         # the from-expert / install-published paths; without it RLS rejects
         # the agents INSERT for tenant callers.
-        org_id=_creator_org_id(user),
+        org_id=_creator_org_id_checked(user),
         runtime_config={
             key: value
             for key, value in {

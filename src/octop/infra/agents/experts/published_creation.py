@@ -465,7 +465,9 @@ async def install_published_expert(
         config_extra["conversation_mode"] = options.conversation_mode
 
     # 2026-09-27 attribution hook (pluggable: resource_attribution).
-    from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+    from octop.infra.users.resource_attribution import (
+        creator_org_id_checked as _creator_org_id_checked,
+    )
 
     async def seed_snapshot(created_row: Any, workspace: Any) -> None:
         await seed_expert_directory(expert_dir=snapshot_dir, workspace=workspace)
@@ -506,7 +508,7 @@ async def install_published_expert(
             welcome_message=options.welcome_message,
             # 2026-09-27 attribution rule: platform-admin installs stay
             # unattributed (pluggable: resource_attribution).
-            org_id=_creator_org_id(user),
+            org_id=_creator_org_id_checked(user),
         ),
         defer_bootstrap=True,
         workspace_initializer=seed_snapshot,

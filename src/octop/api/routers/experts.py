@@ -1051,7 +1051,7 @@ async def create_agent_from_expert(
         user_repo=server.services.user_repo,
         user_id=user.id,
     )
-    from octop.infra.users.resource_attribution import creator_org_id
+    from octop.infra.users.resource_attribution import creator_org_id_checked
 
     spec = build_create_spec_from_expert(
         expert_id=expert_id,
@@ -1072,7 +1072,10 @@ async def create_agent_from_expert(
         # 2026-09-27 attribution rule (see creator_org_id): a platform admin
         # creates *unattributed*; a tenant user stamps their own tenant.
         # Missing this made RLS reject the INSERT for tenant callers (500).
-        org_id=creator_org_id(user),
+        # The checked variant also rejects unattributed non-admin callers
+        # up front (403) — under the 029 policy their NULL-stamped INSERT
+        # would otherwise die in RLS with a 500.
+        org_id=creator_org_id_checked(user),
     )
     patch, copies, report = _composer_apply(body, user=user, server=server)
     row = await server.app_runtime.agent_registry.create(

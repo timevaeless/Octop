@@ -590,7 +590,9 @@ async def create_base(
         _require_usable(server, request)
         # 2026-09-27 attribution hook (pluggable: resource_attribution):
         # platform-admin KBs stay unattributed until assigned.
-        from octop.infra.users.resource_attribution import creator_org_id as _creator_org_id
+        from octop.infra.users.resource_attribution import (
+            creator_org_id_checked as _creator_org_id_checked,
+        )
 
         base = _knowledge_service(server).create_base(
             owner_user_id=user.id,
@@ -602,7 +604,7 @@ async def create_base(
             max_documents=body.max_documents if body.max_documents is not None else MAX_DOCS_PER_KB,
             # 2026-09-27 attribution hook (pluggable: resource_attribution):
             # platform-admin KBs stay unattributed until assigned.
-            org_id=_creator_org_id(user),
+            org_id=_creator_org_id_checked(user),
         )
         return _base_payload(server, base)
     except Exception as exc:
