@@ -59,6 +59,7 @@ import {
 } from "lucide-react";
 import { useAuthImageSrc } from "../../../hooks/useAuthImageSrc";
 import { needsAuthBlobFetch } from "../../../utils/toolMediaBlocks";
+import { DEPLOY_PREFIX } from "../../../api/config";
 
 const iconMap: Record<string, (size: number) => ReactNode> = {
   sparkles: (size) => <Sparkles size={size} />,
@@ -180,6 +181,17 @@ export function resolveExpertAvatarUrl(iconUrl?: string | null): string | null {
   if (!url) return null;
   if (url.startsWith("/api/agents/")) {
     return normalizeAgentScopedApiUrl(url);
+  }
+  // Bundled static avatars (/experts/avatars/…) live in the dashboard public
+  // dir. Behind a path-prefix deployment (BASE_URL, e.g. "/octop") the raw
+  // root-absolute URL 404s and cards silently fall back to Lucide icons —
+  // carry the deploy prefix (idempotent).
+  if (
+    DEPLOY_PREFIX &&
+    url.startsWith("/experts/") &&
+    !url.startsWith(`${DEPLOY_PREFIX}/`)
+  ) {
+    return `${DEPLOY_PREFIX}${url}`;
   }
   return url;
 }

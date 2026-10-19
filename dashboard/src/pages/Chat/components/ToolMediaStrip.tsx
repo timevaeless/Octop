@@ -2,7 +2,7 @@ import { useLayoutEffect, useState } from "react";
 import { Image } from "antd";
 import { useTranslation } from "react-i18next";
 import { requestBlob, getAuthToken } from "../../../api/request";
-import { getApiUrl } from "../../../api/config";
+import { getApiUrl, toApiPath } from "../../../api/config";
 import { useAuthImageSrc } from "../../../hooks/useAuthImageSrc";
 import {
   needsAuthBlobFetch,
@@ -53,7 +53,7 @@ function RefreshableVideo({ item }: { item: ToolMediaItem }) {
 
     const load = async () => {
       if (needsAuthBlobFetch(item.url)) {
-        const apiPath = item.url.replace(/^\/api/, "");
+        const apiPath = toApiPath(item.url);
         const blob = await requestBlob(apiPath);
         if (cancelled) return;
         objectUrl = URL.createObjectURL(blob);
@@ -62,7 +62,7 @@ function RefreshableVideo({ item }: { item: ToolMediaItem }) {
       }
       if (item.url.startsWith("/api/")) {
         const token = getAuthToken();
-        const base = getApiUrl(item.url.replace(/^\/api/, ""));
+        const base = getApiUrl(toApiPath(item.url));
         setSrc(
           token
             ? `${base}${

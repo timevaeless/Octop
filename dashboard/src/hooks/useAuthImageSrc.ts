@@ -1,5 +1,6 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { requestBlob } from "../api/request";
+import { toApiPath } from "../api/config";
 import {
   asImageBlob,
   isDataUrl,
@@ -18,14 +19,6 @@ type AuthImageCacheEntry = {
 
 const authImageCache = new Map<string, AuthImageCacheEntry>();
 
-function apiPathFromUrl(url: string): string {
-  if (url.startsWith("http")) {
-    const parsed = new URL(url);
-    return parsed.pathname.replace(/^\/api/, "") + parsed.search;
-  }
-  return url.replace(/^\/api/, "");
-}
-
 export async function fetchAuthImageBlob(
   url: string,
   filename?: string,
@@ -34,7 +27,7 @@ export async function fetchAuthImageBlob(
     const res = await fetch(url);
     return asImageBlob(await res.blob(), filename);
   }
-  const blob = await requestBlob(apiPathFromUrl(url), { cache: "no-store" });
+  const blob = await requestBlob(toApiPath(url), { cache: "no-store" });
   return asImageBlob(blob, filename);
 }
 

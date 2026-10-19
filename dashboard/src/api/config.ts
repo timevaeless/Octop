@@ -28,6 +28,29 @@ export function stripApiPrefix(url: string): string {
 }
 
 /**
+ * Normalize an Octop API URL down to the bare path form the request helpers
+ * (``request``/``requestBlob``/``getApiUrl``) expect: no deploy prefix and no
+ * ``/api`` prefix. Handles URLs that already carry the deploy prefix
+ * (``/octop/api/agents/…``), the legacy bare ``/api/agents/…`` form, and
+ * already-bare ``/agents/…`` paths — all become ``/agents/…``. Query and
+ * hash are preserved. Without this, re-prefixed input would double the
+ * prefix (``/octop/api/octop/api/…``) and 404 behind path deployments.
+ */
+export function toApiPath(url: string): string {
+  const strip = (s: string): string =>
+    stripApiPrefix(s).replace(/^\/api(?=\/|\?|#|$)/, "");
+  if (/^https?:\/\//i.test(url)) {
+    try {
+      const parsed = new URL(url);
+      return `${strip(parsed.pathname)}${parsed.search}${parsed.hash}`;
+    } catch {
+      return url;
+    }
+  }
+  return strip(url);
+}
+
+/**
  * Get the full API URL with /api prefix
  * @param path - API path (e.g., "/models", "/skills")
  * @returns Full API URL (e.g., "http://localhost:8088/api/models" or "/api/models")

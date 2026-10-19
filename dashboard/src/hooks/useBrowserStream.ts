@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { getWsUrl } from "../api/config";
 import { getAuthToken } from "../api/request";
 import { normalizeUrl } from "../utils/normalizeUrl";
 import {
@@ -46,8 +47,8 @@ function buildWsUrl(
         bridgeConnectionId,
       )}/browser-stream/ws`
     : "/browser-stream/ws";
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const base = `${protocol}://${window.location.host}/api${path}`;
+  // getWsUrl prefixes BASE_URL (deploy path, e.g. "/octop") before "/api".
+  const base = getWsUrl(path);
   const params = new URLSearchParams({
     width: String(width),
     height: String(height),

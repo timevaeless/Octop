@@ -1,6 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { requestBlob } from "../../../api/request";
+import { toApiPath } from "../../../api/config";
 import {
   agentAttachmentAccessUrl,
   isDataUrl,
@@ -9,14 +10,6 @@ import {
 } from "../../../utils/toolMediaBlocks";
 import { MessageFileCard } from "./MessageFileCard";
 import styles from "../index.module.less";
-
-function apiPathFromUrl(url: string): string {
-  if (url.startsWith("http")) {
-    const parsed = new URL(url);
-    return parsed.pathname.replace(/^\/api/, "") + parsed.search;
-  }
-  return url.replace(/^\/api/, "");
-}
 
 function typedBlob(blob: Blob, mimeHint?: string): Blob {
   if (blob.type && blob.type !== "application/octet-stream") return blob;
@@ -76,7 +69,7 @@ export function ChatMediaPlayer({
         }
         const blob = isDataUrl(resolvedUrl)
           ? await (await fetch(resolvedUrl)).blob()
-          : await requestBlob(apiPathFromUrl(resolvedUrl), {
+          : await requestBlob(toApiPath(resolvedUrl), {
               cache: "no-store",
             });
         if (cancelled) return;
