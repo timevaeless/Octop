@@ -84,6 +84,9 @@ export default function AdminMcpCatalogPage() {
   // v2 追加：一键接入连接器 + Higress 入口地址设置（部署拓扑相关）
   const [higressBase, setHigressBase] = useState("");
   const [baseDraft, setBaseDraft] = useState("");
+  // mcp-hub 端点（ext-auth 注入用，host:port；空=默认 mcp-hub.dns:8090）
+  const [hubEndpoint, setHubEndpoint] = useState("");
+  const [hubDraft, setHubDraft] = useState("");
   const [baseSaving, setBaseSaving] = useState(false);
   const [baseModalOpen, setBaseModalOpen] = useState(false);
   const [attachingId, setAttachingId] = useState<string | null>(null);
@@ -104,7 +107,10 @@ export default function AdminMcpCatalogPage() {
   useEffect(() => {
     mcpCatalogApi
       .getConnectorSettings()
-      .then((s) => setHigressBase(s.higress_base ?? ""))
+      .then((s) => {
+        setHigressBase(s.higress_base ?? "");
+        setHubEndpoint(s.hub_endpoint ?? "");
+      })
       .catch(() => {
         /* 非阻断：未读到地址时 attach 会给出明确提示 */
       });
@@ -113,8 +119,12 @@ export default function AdminMcpCatalogPage() {
   const saveBase = async () => {
     setBaseSaving(true);
     try {
-      const r = await mcpCatalogApi.putConnectorSettings(baseDraft.trim());
+      const r = await mcpCatalogApi.putConnectorSettings(
+        baseDraft.trim(),
+        hubDraft.trim(),
+      );
       setHigressBase(r.higress_base);
+      setHubEndpoint(r.hub_endpoint ?? "");
       setBaseModalOpen(false);
       message.success(t("mcpCatalog.connector.baseSaved"));
     } catch (err) {
@@ -147,6 +157,7 @@ export default function AdminMcpCatalogPage() {
   const attachConnector = (service: McpCatalogService) => {
     if (!higressBase) {
       setBaseDraft("");
+      setHubDraft(hubEndpoint);
       setBaseModalOpen(true);
       message.warning(t("mcpCatalog.connector.baseRequired"));
       return;
@@ -404,6 +415,7 @@ export default function AdminMcpCatalogPage() {
               icon={<Settings2 size={14} />}
               onClick={() => {
                 setBaseDraft(higressBase);
+                setHubDraft(hubEndpoint);
                 setBaseModalOpen(true);
               }}
             >
@@ -722,7 +734,7 @@ export default function AdminMcpCatalogPage() {
         onClose={() => setPublishResult(null)}
       />
 
-      {/* v2 追加：Higress 入口地址（一键接入连接器的 URL 前缀） */}
+      {/* v2 追加：Higress 入口地址（一键接入连接器的 URL 前缀）+ mcp-hub 端点 */}
       <Modal
         open={baseModalOpen}
         title={t("mcpCatalog.connector.baseModalTitle")}
@@ -742,6 +754,24 @@ export default function AdminMcpCatalogPage() {
           placeholder="http://172.17.0.1"
           maxLength={256}
         />
+        <div style={{ margin: "16px 0 8px" }}>
+          {t("mcpCatalog.connector.hubLabel")}
+        </div>
+        <Input
+          value={hubDraft}
+          onChange={(e) => setHubDraft(e.target.value)}
+          placeholder={t("mcpCatalog.connector.hubPlaceholder")}
+          maxLength={256}
+        />
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 12,
+            color: "var(--text-tertiary, #999)",
+          }}
+        >
+          {t("mcpCatalog.connector.hubHelp")}
+        </div>
       </Modal>
     </PageShell.FillTabs>
   );

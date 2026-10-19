@@ -7254,8 +7254,11 @@
     "resultError": "失败",
     "connector": {
       "baseButton": "Higress 地址",
-      "baseModalTitle": "Higress 入口地址",
+      "baseModalTitle": "Higress / MCP Hub 地址",
       "baseHelp": "一键接入连接器时拼接 MCP URL 的前缀：奇宝 视角可达的 Higress 地址（如 http://172.17.0.1 或 https://gw.example.com）。生产上 Higress 与 奇宝 可能不在同一 docker 网络，按部署拓扑填写。",
+      "hubLabel": "MCP Hub 地址（可选）",
+      "hubPlaceholder": "192.168.133.204:8090",
+      "hubHelp": "发布服务时注入 Higress ext-auth 的 mcp-hub 端点（格式 host:port，如 192.168.133.204:8090）。留空使用默认 mcp-hub.dns:8090；生产拓扑与默认不符时必填，保存后需重新发布相关服务才生效。",
       "baseSaved": "Higress 地址已保存",
       "baseRequired": "请先配置 Higress 入口地址",
       "attach": "接入连接器",

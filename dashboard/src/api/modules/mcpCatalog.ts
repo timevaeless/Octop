@@ -325,14 +325,24 @@ export const mcpCatalogApi = {
   },
 
   // v2 追加：Higress 入口地址（部署拓扑相关，存服务端 settings KV）
-  getConnectorSettings(): Promise<{ higress_base: string }> {
+  // hub_endpoint：发布时注入 ext-auth 的 mcp-hub 端点（host:port；空串=回默认）
+  getConnectorSettings(): Promise<{
+    higress_base: string;
+    hub_endpoint?: string;
+  }> {
     return request(`${BASE}/connector-settings`);
   },
 
-  putConnectorSettings(higressBase: string): Promise<{ higress_base: string }> {
+  putConnectorSettings(
+    higressBase: string,
+    hubEndpoint?: string,
+  ): Promise<{ higress_base: string; hub_endpoint?: string }> {
     return request(`${BASE}/connector-settings`, {
       method: "PUT",
-      body: JSON.stringify({ higress_base: higressBase }),
+      body: JSON.stringify({
+        higress_base: higressBase,
+        ...(hubEndpoint !== undefined ? { hub_endpoint: hubEndpoint } : {}),
+      }),
     });
   },
 

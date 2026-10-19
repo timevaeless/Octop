@@ -32,6 +32,7 @@ from octop.mcp_catalog.publisher import (
     CatalogPublisher,
     build_plugin_tool,
     effective_tool_roles,
+    ext_auth_rule_config,
     global_acl,
     prune_tools_to_service_roles,
     registry_is_verified,
@@ -1147,7 +1148,13 @@ def publish_service(
     action = "dry_run" if body.dry_run else "publish"
     try:
         if body.dry_run:
-            detail = _publisher().publish(svc, tools, _global_acl(repo, svc, tools), dry_run=True)
+            detail = _publisher().publish(
+                svc,
+                tools,
+                _global_acl(repo, svc, tools),
+                dry_run=True,
+                hub_endpoint=_hub_endpoint(server),
+            )
         else:
             # serialize gateway read-modify-write (review 2.7): two concurrent
             # publishes would silently drop each other's plugin rule. The ACL
@@ -1165,7 +1172,12 @@ def publish_service(
                 if not tools:
                     raise HTTPException(status_code=409, detail="no tools to publish")
                 detail = _publisher().publish(
-                    svc, tools, _global_acl(repo, svc, tools), dry_run=False, fence=fence
+                    svc,
+                    tools,
+                    _global_acl(repo, svc, tools),
+                    dry_run=False,
+                    fence=fence,
+                    hub_endpoint=_hub_endpoint(server),
                 )
                 repo.update_service(service_id, {"status": "published"})
     except (RuntimeError, ValueError, json.JSONDecodeError) as e:
@@ -1290,7 +1302,12 @@ def reconcile_service(
             # recompute the tool list and ACL inside the lock (review round-4 §7)
             tools = repo.list_tools(service_id)
             detail = _publisher().publish(
-                svc, tools, _global_acl(repo, svc, tools), dry_run=False, fence=fence
+                svc,
+                tools,
+                _global_acl(repo, svc, tools),
+                dry_run=False,
+                fence=fence,
+                hub_endpoint=_hub_endpoint(server),
             )
     except (RuntimeError, ValueError, json.JSONDecodeError) as e:
         repo.log_publish(service_id, "reconcile", "error", {"error": str(e)}, actor=user.username)
@@ -1342,11 +1359,19 @@ def publish_log(
 
 _HIGRESS_BASE_KEY = "mcp_catalog_higress_base"
 
+# mcp-hub endpoint for route ext-auth (deployment topology fact — same
+# rationale as _HIGRESS_BASE_KEY). Default keeps the frozen template value;
+# empty/absent = default.
+_HUB_ENDPOINT_KEY = "mcp_catalog_hub_endpoint"
+
 
 class ConnectorSettingsBody(BaseModel):
     # Base URL only — e.g. "http://172.17.0.1" or "https://gw.example.com".
     # The per-service mcp_path is appended at attach time.
     higress_base: str
+    # mcp-hub endpoint as "host:port" (bare host; ".dns" suffix optional).
+    # None = leave unchanged; "" = reset to the frozen default.
+    hub_endpoint: str | None = None
 
 
 class AttachConnectorBody(BaseModel):
@@ -1387,7 +1412,10 @@ def _normalize_higress_base(url: str) -> str:
 
 @router.get("/connector-settings")
 def get_connector_settings(_: Any = Depends(require_admin()), server: Any = Depends(get_server)) -> dict[str, Any]:
-    return {"higress_base": _settings_repo(server).get(_HIGRESS_BASE_KEY) or ""}
+    return {
+        "higress_base": _settings_repo(server).get(_HIGRESS_BASE_KEY) or "",
+        "hub_endpoint": _settings_repo(server).get(_HUB_ENDPOINT_KEY) or "",
+    }
 
 
 @router.put("/connector-settings")
@@ -1398,7 +1426,31 @@ def put_connector_settings(
 ) -> dict[str, Any]:
     base = _normalize_higress_base(body.higress_base)
     _settings_repo(server).set(_HIGRESS_BASE_KEY, base)
-    return {"higress_base": base}
+    result: dict[str, Any] = {"higress_base": base}
+    if body.hub_endpoint is not None:
+        candidate = body.hub_endpoint.strip()
+        if candidate:
+            # validate by building the plugin config — bad format → 400
+            try:
+                ext_auth_rule_config(candidate)
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e)) from e
+            _settings_repo(server).set(_HUB_ENDPOINT_KEY, candidate)
+        else:
+            _settings_repo(server).delete(_HUB_ENDPOINT_KEY)
+        result["hub_endpoint"] = candidate
+    return result
+
+
+def _hub_endpoint(server: Any) -> str | None:
+    """Configured mcp-hub endpoint for route ext-auth (None = frozen default)."""
+    # Defensive getattr: minimal test servers may not carry settings_repo —
+    # fall back to the frozen default template in that case.
+    repo = getattr(getattr(server, "services", None), "settings_repo", None)
+    if repo is None:
+        return None
+    stored = repo.get(_HUB_ENDPOINT_KEY)
+    return stored or None
 
 
 def _schedule_connector_reload(server: Any, user_id: int) -> None:

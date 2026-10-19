@@ -150,6 +150,32 @@ _EXT_AUTH_DEFAULT_RULE_CONFIG: dict[str, Any] = {
     "match_list": [{"match_rule_path": "/mcp-api/", "match_rule_type": "prefix"}],
 }
 
+DEFAULT_HUB_ENDPOINT = "mcp-hub.dns:8090"
+
+
+def ext_auth_rule_config(hub_endpoint: str | None = None) -> dict[str, Any]:
+    """Frozen authz policy + injectable mcp-hub endpoint (topology fact).
+
+    The policy keys above (fail-closed / status_on_error / allowed headers /
+    ``/mcp-api`` whitelist) must never drift — only the ``endpoint`` is
+    deployment-specific (docker gateway IP locally, K8s Service on ACK).
+    ``hub_endpoint`` is ``host:port`` (bare host, ``.dns`` suffix optional —
+    it is normalized); ``None``/empty keeps the frozen default verbatim.
+    Invalid format raises ``ValueError``: publish fails loudly rather than
+    silently re-pointing the authz surface.
+    """
+    config = copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)
+    if not hub_endpoint:
+        return config
+    endpoint = str(hub_endpoint).strip().rstrip("/")
+    host, sep, port = endpoint.rpartition(":")
+    host = host.removesuffix(".dns")
+    if not sep or not host or not port.isdigit() or not (0 < int(port) < 65536):
+        raise ValueError(f"invalid hub endpoint {hub_endpoint!r}: expected host:port")
+    config["http_service"]["endpoint"]["service_name"] = f"{host}.dns"
+    config["http_service"]["endpoint"]["service_port"] = int(port)
+    return config
+
 
 def effective_tool_roles(
     tool_roles: list[str] | None, svc_roles: list[str] | None
@@ -323,6 +349,7 @@ class CatalogPublisher:
         *,
         dry_run: bool = False,
         fence: Callable[[], None] | None = None,
+        hub_endpoint: str | None = None,
     ) -> dict[str, Any]:
         """Compute (and unless ``dry_run``, write) all derived gateway objects.
 
@@ -358,7 +385,7 @@ class CatalogPublisher:
 
         tool_entries = [build_plugin_tool(t) for t in tools if t.enabled]
         mcp_action: str = "set" if tool_entries else "cleared"
-        ext_config = copy.deepcopy(_EXT_AUTH_DEFAULT_RULE_CONFIG)
+        ext_config = ext_auth_rule_config(hub_endpoint)
 
         detail: dict[str, Any] = {
             "route": {

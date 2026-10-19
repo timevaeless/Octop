@@ -7254,8 +7254,11 @@
     "resultError": "Failed",
     "connector": {
       "baseButton": "Higress URL",
-      "baseModalTitle": "Higress ingress base URL",
+      "baseModalTitle": "Higress / MCP Hub addresses",
       "baseHelp": "Prefix used to build MCP URLs when attaching connectors: the Higress address reachable from Qbot (e.g. http://172.17.0.1 or https://gw.example.com). In production Higress and Qbot may not share a docker network — fill in per your topology.",
+      "hubLabel": "MCP Hub endpoint (optional)",
+      "hubPlaceholder": "192.168.133.204:8090",
+      "hubHelp": "The mcp-hub endpoint injected into the Higress ext-auth config when publishing (host:port, e.g. 192.168.133.204:8090). Leave empty to use the default mcp-hub.dns:8090; required in production when the topology differs. Re-publish affected services after saving.",
       "baseSaved": "Higress base URL saved",
       "baseRequired": "Configure the Higress base URL first",
       "attach": "Attach connector",

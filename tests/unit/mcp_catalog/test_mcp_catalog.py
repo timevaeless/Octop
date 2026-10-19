@@ -1168,6 +1168,60 @@ def test_ext_auth_template_is_frozen_and_deep_copied():
     assert _EXT_AUTH_DEFAULT_RULE_CONFIG == before
 
 
+def test_ext_auth_hub_endpoint_default_keeps_frozen_template():
+    """hub_endpoint 未配置 → ext-auth endpoint 与冻结模板逐字一致。"""
+    from octop.mcp_catalog.publisher import _EXT_AUTH_DEFAULT_RULE_CONFIG
+
+    gw, _acl, pub = _publisher_stub()
+    pub.publish(_service_row(), [_tool_row()], {"cheryfs": ["t1"]})
+    written = gw.plugins[("summer-cmc-mcp", "ext-auth")]
+    assert (
+        written["http_service"]["endpoint"]
+        == _EXT_AUTH_DEFAULT_RULE_CONFIG["http_service"]["endpoint"]
+    )
+    assert written["http_service"]["endpoint"]["service_name"] == "mcp-hub.dns"
+    assert written["http_service"]["endpoint"]["service_port"] == 8090
+
+
+def test_ext_auth_hub_endpoint_injection_and_validation():
+    """hub_endpoint 注入 endpoint（拓扑事实）；策略键仍冻结；非法格式 fail-loud。"""
+    import pytest as _pytest
+
+    from octop.mcp_catalog.publisher import (
+        _EXT_AUTH_DEFAULT_RULE_CONFIG,
+        ext_auth_rule_config,
+    )
+
+    gw, _acl, pub = _publisher_stub()
+    pub.publish(
+        _service_row(), [_tool_row()], {"cheryfs": ["t1"]},
+        hub_endpoint="192.168.133.204:8090",
+    )
+    written = gw.plugins[("summer-cmc-mcp", "ext-auth")]
+    assert written["http_service"]["endpoint"]["service_name"] == "192.168.133.204.dns"
+    assert written["http_service"]["endpoint"]["service_port"] == 8090
+    # 策略键不受 endpoint 注入影响
+    assert written["failure_mode_allow"] is False
+    assert written["status_on_error"] == 403
+    assert written["match_type"] == "whitelist"
+    # 冻结常量未被污染
+    assert _EXT_AUTH_DEFAULT_RULE_CONFIG["http_service"]["endpoint"]["service_name"] == "mcp-hub.dns"
+
+    # ".dns" 后缀幂等归一（带后缀配置等价裸 host）
+    cfg = ext_auth_rule_config("mcp-hub.dns:8090")
+    assert cfg["http_service"]["endpoint"]["service_name"] == "mcp-hub.dns"
+    assert cfg["http_service"]["endpoint"]["service_port"] == 8090
+
+    # None / 空 → 回冻结默认
+    assert ext_auth_rule_config(None) == _EXT_AUTH_DEFAULT_RULE_CONFIG
+    assert ext_auth_rule_config("") == _EXT_AUTH_DEFAULT_RULE_CONFIG
+
+    # 非法格式 fail-loud（拒绝静默改写鉴权面）
+    for bad in ("no-port", "host:", "host:0", "host:99999", "host:name"):
+        with _pytest.raises(ValueError):
+            ext_auth_rule_config(bad)
+
+
 def test_import_prunes_only_openapi_source_tools(repo: CatalogRepo):
     """第二轮评审 N3 回归：删幽灵工具只能删 source='openapi'，
     手工工具（§8.3 正式途径）必须存活。"""
@@ -1414,7 +1468,7 @@ def test_publish_and_reconcile_compute_acl_inside_lock(repo: CatalogRepo, monkey
     monkeypatch.setattr(router, "_global_acl", spy_acl)
 
     class _StubPub:
-        def publish(self, svc, tools, acl_map, *, dry_run, fence=None):
+        def publish(self, svc, tools, acl_map, *, dry_run, fence=None, hub_endpoint=None):
             return {
                 "acl": acl_map,
                 "written": not dry_run,
@@ -1839,7 +1893,7 @@ def test_publish_fence_aborts_after_lease_loss(repo: CatalogRepo, monkeypatch):
 
     # router level: a fence failure surfaces as 502 with a publish log entry
     class _FenceStubPub:
-        def publish(self, svc, tools, acl_map, *, dry_run, fence=None):
+        def publish(self, svc, tools, acl_map, *, dry_run, fence=None, hub_endpoint=None):
             fence()  # router fence -> renew_lock -> False
             return {
                 "acl": acl_map,
@@ -2453,6 +2507,45 @@ def test_connector_settings_roundtrip_and_validation(repo: CatalogRepo):
         with pytest.raises(HTTPException) as ei:
             router.put_connector_settings(router.ConnectorSettingsBody(higress_base=bad), None, server)
         assert ei.value.status_code == 400
+
+
+def test_connector_settings_hub_endpoint_roundtrip_and_validation(repo: CatalogRepo):
+    """hub_endpoint KV 往返：合法值落库可读回、非法格式 400、空串清除。"""
+    from fastapi import HTTPException
+
+    from octop.mcp_catalog import router
+
+    server = _connector_server(repo)
+    assert router.get_connector_settings(None, server)["hub_endpoint"] == ""
+    router.put_connector_settings(
+        router.ConnectorSettingsBody(
+            higress_base="http://172.17.0.1", hub_endpoint="192.168.133.204:8090"
+        ),
+        None,
+        server,
+    )
+    assert router.get_connector_settings(None, server)["hub_endpoint"] == "192.168.133.204:8090"
+    for bad in ("no-port", "host:", "host:0", "host:99999", "host:name"):
+        with pytest.raises(HTTPException) as ei:
+            router.put_connector_settings(
+                router.ConnectorSettingsBody(higress_base="http://172.17.0.1", hub_endpoint=bad),
+                None,
+                server,
+            )
+        assert ei.value.status_code == 400
+    # 非法值不落库；None = 不改动
+    assert router.get_connector_settings(None, server)["hub_endpoint"] == "192.168.133.204:8090"
+    router.put_connector_settings(
+        router.ConnectorSettingsBody(higress_base="http://172.17.0.1"), None, server
+    )
+    assert router.get_connector_settings(None, server)["hub_endpoint"] == "192.168.133.204:8090"
+    # "" = 重置回冻结默认
+    router.put_connector_settings(
+        router.ConnectorSettingsBody(higress_base="http://172.17.0.1", hub_endpoint=""),
+        None,
+        server,
+    )
+    assert router.get_connector_settings(None, server)["hub_endpoint"] == ""
 
 
 def test_attach_connector_gates(repo: CatalogRepo, monkeypatch):
