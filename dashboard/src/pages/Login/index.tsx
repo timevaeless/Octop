@@ -153,6 +153,37 @@ export default function LoginPage() {
     navigate("/login", { replace: true });
   }, [navigate, searchParams, t]);
 
+  // Auto-start SSO only on explicit opt-in (?sso=auto) when OIDC is the
+  // only enabled login provider. Bare /login — bookmarks, post-logout
+  // redirect, admin entry — always shows the local username/password form
+  // so the built-in super-admin login and account switching stay reachable.
+  // Seamless entry points (portal floating ball) link to /login?sso=auto.
+  // A failed attempt redirects to /login?oidc_error=... without sso=auto,
+  // so there is no retry loop by construction.
+  // Guards:
+  // - popup context (the page itself is an SSO popup — never redirect it)
+  const autoSsoAttempted = useRef(false);
+  useEffect(() => {
+    if (autoSsoAttempted.current) return;
+    if (providers.length !== 1 || providers[0].kind !== "oidc") return;
+    if (searchParams.get("sso") !== "auto" || isSsoPopup()) {
+      autoSsoAttempted.current = true;
+      return;
+    }
+    autoSsoAttempted.current = true;
+    setSsoLoadingKind("oidc");
+    setRememberLoginPreference(remember);
+    authApi
+      .startOauth("oidc", "/chat")
+      .then(({ authorization_url }) => {
+        window.location.href = authorization_url;
+      })
+      .catch((err) => {
+        setSsoLoadingKind(null);
+        message.error(apiErrorMessage(err, t("login.oidcStartFailed"), t));
+      });
+  }, [providers, remember, searchParams, t]);
+
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
       if (!isSsoPopupMessage(event, window.location.origin) || !event.data.ok) {
