@@ -237,6 +237,8 @@ def build_app(server: OctopServer) -> FastAPI:
     from octop.api.routers.storage_backends import user_router as storage_backends_user_router
     from octop.api.routers.tls import router as tls_router
     from octop.api.routers.voice import admin_router as admin_voice_router
+    from octop.infra.gateway.whatsapp.webhook import admin_router as whatsapp_admin_router
+    from octop.infra.gateway.whatsapp.webhook import webhook_router as whatsapp_webhook_router
     from octop.mcp_catalog.router import (
         router as mcp_catalog_router,  # isolated module (upstream-merge safe)
     )
@@ -267,6 +269,10 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(internal_mcp.router, "/api", ["internal-mcp"]),
             _RouterMount(internal_acl.router, "/api", ["internal-acl"]),
             _RouterMount(channels.router, "/api", ["channels"]),
+            _RouterMount(whatsapp_admin_router, "/api", ["channels"]),
+            # JWT-exempt; every event is HMAC-verified against the channel's
+            # app_secret (see deps.py exemption prefix).
+            _RouterMount(whatsapp_webhook_router, "/api", ["channels"]),
             _RouterMount(cron.router, "/api", ["cron"]),
             _RouterMount(settings.router, "/api", ["settings"]),
             _RouterMount(envs.router, "/api", ["envs"]),

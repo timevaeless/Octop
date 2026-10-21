@@ -228,8 +228,13 @@ class Gateway:
         from octop.infra.gateway.process.channel_thinking import (
             install_channel_thinking_clean,
         )
+        from octop.infra.gateway.whatsapp import (
+            filter_boot_rows as filter_whatsapp_boot_rows,
+        )
+        from octop.infra.gateway.whatsapp import install_extension as install_whatsapp_extension
 
         install_channel_thinking_clean()
+        install_whatsapp_extension()
         self._processor = GlobalProcessor(
             agent_manager=self._agent_manager,
             thread_registry=self._thread_registry,
@@ -269,6 +274,7 @@ class Gateway:
         await self._channel_manager.add_channel(self._cli_channel)
 
         rows = self._repos.channel_repo.list_all(include_disabled=False)
+        rows = filter_whatsapp_boot_rows(self, rows)
         if rows:
             await asyncio.gather(*(self._safe_register_channel(row) for row in rows))
 

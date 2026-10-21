@@ -133,6 +133,9 @@ ignore = ["E501"]
 "tests/**" = ["B011"]
 "src/octop/api/**" = ["B008"]
 "src/octop/mcp_catalog/**" = ["B008"]
+# WhatsApp extension: webhook.py follows the FastAPI Depends-in-defaults style
+# used by src/octop/api routers; the module lives under infra by design.
+"src/octop/infra/gateway/whatsapp/**" = ["B008"]
 
 [tool.mypy]
 python_version = "3.12"

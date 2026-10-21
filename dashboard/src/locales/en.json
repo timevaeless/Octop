@@ -2456,6 +2456,7 @@
     "label_xiaoyi": "XiaoYi",
     "label_mqtt": "MQTT",
     "label_telegram": "Telegram",
+    "label_whatsapp": "WhatsApp",
     "intro_agentchat": "Connect via the AgentChat protocol for internal debugging — no external credentials required.",
     "loading": "Loading channels...",
     "loadFailed": "Failed to load channels",
@@ -2671,7 +2672,12 @@
     "discordAllowAllChannelsHelp": "On by default; no channel IDs needed. Turn off to restrict access to the channels listed below. Mention the bot to get a reply.",
     "discordSetupHelp": "Enable Message Content Intent on the Discord Bot page and invite the bot to your server. All server text channels the bot can access are allowed by default; mention the bot to get a reply. DMs only accept the user IDs listed below; leave empty to disable DMs.",
     "telegramAllowedUsers": "Allowed Telegram user IDs (comma or newline separated)",
-    "telegramAllowedUsersHelp": "Only these numeric user IDs can talk to the bot, in private chats and groups. Leave empty to let anyone who finds the bot use it."
+    "telegramAllowedUsersHelp": "Only these numeric user IDs can talk to the bot, in private chats and groups. Leave empty to let anyone who finds the bot use it.",
+    "whatsappExtension": "WhatsApp extension",
+    "whatsappExtensionHelp": "WhatsApp is an in-project channel extension. Turning it off immediately disables all WhatsApp channels and blocks new ones; configs are kept and restored when re-enabled.",
+    "whatsappExtensionOn": "WhatsApp extension enabled",
+    "whatsappExtensionOff": "WhatsApp extension disabled",
+    "whatsappExtensionToggleFailed": "Failed to toggle WhatsApp extension"
   },
   "tokenUsage": {
     "title": "Token Usage Analytics",

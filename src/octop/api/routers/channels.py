@@ -34,21 +34,31 @@ router = APIRouter()
 
 
 class ChannelCreateBody(BaseModel):
-    kind: ChannelKind
+    # "whatsapp" comes from the in-project extension (infra/gateway/whatsapp);
+    # it is not part of the upstream ChannelKind enum.
+    kind: ChannelKind | Literal["whatsapp"]
     name: str
     config: dict[str, Any] = {}
 
 
 class ChannelPatchBody(BaseModel):
-    kind: ChannelKind | None = None
+    kind: ChannelKind | Literal["whatsapp"] | None = None
     name: str | None = None
     config: dict[str, Any] | None = None
     enabled: bool | None = None
 
 
 class ChannelProbeBody(BaseModel):
-    kind: ChannelKind
+    kind: ChannelKind | Literal["whatsapp"]
     config: dict[str, Any] = {}
+
+
+def _assert_kind_allowed(gateway: Any, kind: str) -> None:
+    """Gate extension kinds behind the settings kill switch."""
+    if kind == "whatsapp":
+        from octop.infra.gateway.whatsapp.extension import assert_enabled  # noqa: PLC0415
+
+        assert_enabled(gateway)
 
 
 class FeishuBotCreatorStartBody(BaseModel):
@@ -140,6 +150,7 @@ async def create_channel(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    _assert_kind_allowed(server.app_runtime.gateway, str(body.kind))
     from octop.infra.gateway.gateway import ChannelCreateSpec  # noqa: PLC0415
     from octop.infra.utils.ulid import new_ulid as _new_ulid  # noqa: PLC0415
 
@@ -189,6 +200,8 @@ async def patch_channel(
     existing = server.app_runtime.gateway.get_channel(channel_id)
     if existing is None or existing.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "channel not found")
+    if body.kind is not None:
+        _assert_kind_allowed(server.app_runtime.gateway, str(body.kind))
     row = await server.app_runtime.gateway.update_channel(
         channel_id,
         kind=str(body.kind) if body.kind is not None else None,
@@ -249,6 +262,7 @@ async def probe_channel_config(
 ) -> dict[str, Any]:
     """Probe channel credentials from a draft config (no save required)."""
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
+    _assert_kind_allowed(server.app_runtime.gateway, str(body.kind))
     return cast(
         dict[str, Any],
         await server.app_runtime.gateway.probe_config(

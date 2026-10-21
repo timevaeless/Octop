@@ -9,6 +9,7 @@ import weixinIcon from "../../../../assets/channels/weixin.svg";
 import octopIcon from "../../../../assets/channels/octop.svg";
 import consoleIcon from "../../../../assets/channels/console.svg";
 import telegramIcon from "../../../../assets/channels/telegram.svg";
+import whatsappIcon from "../../../../assets/channels/whatsapp.svg";
 import mqttIcon from "../../../../assets/channels/mqtt.png";
 import xiaoyiIcon from "../../../../assets/channels/xiaoyi.png";
 
@@ -27,6 +28,7 @@ export type ChannelKey =
   | "xiaoyi"
   | "mqtt"
   | "telegram"
+  | "whatsapp"
   | "dashboard"
   | "agentchat"
   | "octopbot";
@@ -46,10 +48,11 @@ export const CHANNEL_KEYS: ChannelKey[] = [
   "discord",
   "xiaoyi",
   "mqtt",
+  "whatsapp",
 ];
 
 /** Overseas / less-common kinds hidden behind "更多通道" until expanded. */
-const COLLAPSED_CHANNEL_KEYS = new Set<ChannelKey>(["telegram", "discord"]);
+const COLLAPSED_CHANNEL_KEYS = new Set<ChannelKey>(["telegram", "discord", "whatsapp"]);
 
 export function isCollapsedChannelKey(key: ChannelKey): boolean {
   return COLLAPSED_CHANNEL_KEYS.has(key);
@@ -87,6 +90,7 @@ export const CHANNEL_LABEL_KEYS: Record<ChannelKey, string> = {
   xiaoyi: "channels.label_xiaoyi",
   mqtt: "channels.label_mqtt",
   telegram: "channels.label_telegram",
+  whatsapp: "channels.label_whatsapp",
   dashboard: "channels.label_dashboard",
   agentchat: "channels.label_agentchat",
   octopbot: "channels.label_octopbot",
@@ -104,6 +108,7 @@ export const CHANNEL_LABELS: Record<ChannelKey, string> = {
   xiaoyi: "小艺",
   mqtt: "MQTT",
   telegram: "Telegram",
+  whatsapp: "WhatsApp",
   dashboard: "控制台",
   agentchat: "AgentChat",
   octopbot: "OctopBot",
@@ -120,6 +125,7 @@ export const CHANNEL_ICONS: Record<ChannelKey, string> = {
   xiaoyi: xiaoyiIcon,
   mqtt: mqttIcon,
   telegram: telegramIcon,
+  whatsapp: whatsappIcon,
   dashboard: dashboardIcon,
   agentchat: consoleIcon,
   octopbot: octopIcon,
@@ -134,6 +140,7 @@ export const CHANNEL_COLORS: Record<ChannelKey, string> = {
   yuanbao: "#E8A317",
   dingtalk: "#0089FF",
   telegram: "#229ED9",
+  whatsapp: "#25D366",
   xiaoyi: "#CF0A2C",
   mqtt: "#7C3AED",
   discord: "#5865F2",
@@ -158,6 +165,7 @@ export const CHANNEL_URLS: Partial<Record<ChannelKey, string>> = {
   yuanbao: "https://yuanbao.tencent.com/bot",
   wecom: "https://work.weixin.qq.com/wework_admin/frame#/aiHelper/create",
   telegram: "https://t.me/BotFather",
+  whatsapp: "https://business.facebook.com/latest/whatsapp_manager/",
   octopbot: "https://octop.cloud.tencent.com",
 };
 
@@ -410,6 +418,32 @@ export const CHANNEL_FIELDS: Partial<Record<ChannelKey, ChannelField[]>> = {
       name: "http_proxy",
       label: "HTTP Proxy",
       placeholder: "http://127.0.0.1:18118",
+    },
+  ],
+  whatsapp: [
+    {
+      name: "phone_number_id",
+      label: "Phone Number ID",
+      placeholder: "1234567890",
+      required: true,
+    },
+    {
+      name: "access_token",
+      label: "Access Token",
+      type: "password",
+      required: true,
+    },
+    {
+      name: "verify_token",
+      label: "Verify Token",
+      type: "password",
+      required: true,
+    },
+    {
+      name: "app_secret",
+      label: "App Secret",
+      type: "password",
+      required: true,
     },
   ],
   // dashboard & agentchat: no required credentials.

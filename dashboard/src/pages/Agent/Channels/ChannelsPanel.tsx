@@ -2,13 +2,14 @@
  * Embeddable per-agent channels grid (preset cards + ChannelDrawer).
  * Lives under Agent/Channels — shared by Personalization tab and Experts drawer.
  */
-import { useCallback, useMemo, useState } from "react";
-import { Form, Button, Empty } from "antd";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Form, Button, Empty, Switch, Tooltip } from "antd";
 import { message } from "@/utils/antdMessage";
 
 import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { request } from "../../../api/request";
 import { CardSkeleton } from "../../../components/Skeleton";
 import {
   ChannelCard,
@@ -124,6 +125,47 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [form] = Form.useForm<ChannelFormValues>();
+
+  // WhatsApp extension kill switch (settings key channels.whatsapp_extension).
+  const [waExtensionEnabled, setWaExtensionEnabled] = useState(true);
+  const [waExtensionLoading, setWaExtensionLoading] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    request<{ enabled: boolean }>("/channels/whatsapp/extension")
+      .then((data) => {
+        if (!cancelled) setWaExtensionEnabled(!!data.enabled);
+      })
+      .catch(() => {
+        /* endpoint absent (older backend) — keep default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleToggleWaExtension = useCallback(
+    async (next: boolean) => {
+      setWaExtensionLoading(true);
+      try {
+        const data = await request<{ enabled: boolean }>(
+          "/channels/whatsapp/extension",
+          { method: "POST", body: JSON.stringify({ enabled: next }) },
+        );
+        setWaExtensionEnabled(!!data.enabled);
+        message.success(
+          t(data.enabled
+            ? "channels.whatsappExtensionOn"
+            : "channels.whatsappExtensionOff"),
+        );
+        void fetchChannels();
+      } catch {
+        message.error(t("channels.whatsappExtensionToggleFailed"));
+      } finally {
+        setWaExtensionLoading(false);
+      }
+    },
+    [fetchChannels, t],
+  );
 
   const channelByKind = useMemo<Map<ChannelKey, ChannelRow>>(() => {
     const map = new Map<ChannelKey, ChannelRow>();
@@ -422,6 +464,17 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
             configured: channelByKind.size,
           })}
         </span>
+        <Tooltip title={t("channels.whatsappExtensionHelp")}>
+          <span className={styles.waExtensionToggle}>
+            <span>WhatsApp</span>
+            <Switch
+              size="small"
+              checked={waExtensionEnabled}
+              loading={waExtensionLoading}
+              onChange={(v) => void handleToggleWaExtension(v)}
+            />
+          </span>
+        </Tooltip>
         <Button
           icon={<RefreshCw size={14} />}
           onClick={() => void fetchChannels()}
