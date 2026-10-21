@@ -94,6 +94,28 @@ def test_parse_strips_pycache_entries() -> None:
     assert not any("__pycache__" in name for name, _ in files)
 
 
+def test_parse_accepts_finder_zipped_package_with_macos_junk() -> None:
+    # Regression 2026-10-21: a Finder-created zip carries __MACOSX/ AppleDouble
+    # entries whose top level defeated wrapper stripping, so the upload failed
+    # with "expert package must contain a root manifest.json".
+    raw = _zip_bytes(
+        {
+            "overseas-biz-qa/manifest.json": _manifest("overseas-biz-qa"),
+            "overseas-biz-qa/SOUL.md": "# soul\n",
+            "overseas-biz-qa/skills/daily-report/SKILL.md": "---\nname: daily-report\n---\nbody\n",
+            "__MACOSX/._overseas-biz-qa": b"\x00\x01appledouble",
+            "__MACOSX/overseas-biz-qa/._manifest.json": b"\x00\x01appledouble",
+            "__MACOSX/overseas-biz-qa/._SOUL.md": b"\x00\x01appledouble",
+        }
+    )
+    expert_id, files = parse_expert_package(raw)
+    assert expert_id == "overseas-biz-qa"
+    names = {name for name, _ in files}
+    assert "manifest.json" in names
+    assert "skills/daily-report/SKILL.md" in names
+    assert not any("__MACOSX" in name for name in names)
+
+
 @pytest.mark.parametrize("bad_id", ["", "../evil", "a/b", ".hidden"])
 def test_parse_rejects_invalid_ids(bad_id: str) -> None:
     raw = _zip_bytes({"manifest.json": _manifest(bad_id)})

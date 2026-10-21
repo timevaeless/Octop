@@ -17,6 +17,7 @@ from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
 
+from octop.infra.skills.macos_zip_junk import is_macos_junk_entry
 from octop.infra.skills.skillhub_common import (
     DEFAULT_SKILLHUB_HOST,
     HTTP_READ_CHUNK,
@@ -260,6 +261,8 @@ def parse_zip_entries(payload: bytes) -> list[tuple[str, bytes]]:
             files: list[tuple[str, bytes]] = []
             for member, clean in _validate_zip(zf):
                 if member.is_dir():
+                    continue
+                if is_macos_junk_entry(clean):  # macOS AppleDouble junk, see macos_zip_junk
                     continue
                 raw = _read_zip_member(zf, member)
                 try:

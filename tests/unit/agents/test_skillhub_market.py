@@ -478,6 +478,35 @@ def test_extract_zip_rejects_unrepairable_skill_md(tmp_path: Path) -> None:
     assert exc_info.value.kind == SkillHubMarketErrorKind.PACKAGE_INVALID
 
 
+def test_parse_zip_entries_strips_macos_junk_and_keeps_wrapper_stripping() -> None:
+    # Regression: macOS Finder archives carry __MACOSX/ AppleDouble entries;
+    # their top level defeated the single-wrapper detection so a valid
+    # manifest.json at "pkg/manifest.json" was not found at the root.
+    raw = _zip_bytes(
+        {
+            "pkg/manifest.json": '{"id": "demo"}',
+            "pkg/SOUL.md": "# soul\n",
+            "__MACOSX/._pkg": b"\x00\x01appledouble",
+            "__MACOSX/pkg/._manifest.json": b"\x00\x01appledouble",
+            "__MACOSX/pkg/._SOUL.md": b"\x00\x01appledouble",
+        }
+    )
+    files = skillhub_market.parse_zip_entries(raw)
+    names = {name for name, _ in files}
+    assert names == {"manifest.json", "SOUL.md"}
+
+
+def test_parse_zip_entries_keeps_normal_dotfiles() -> None:
+    raw = _zip_bytes(
+        {
+            "manifest.json": '{"id": "demo"}',
+            ".gitignore": "*.log\n",
+        }
+    )
+    files = skillhub_market.parse_zip_entries(raw)
+    assert {name for name, _ in files} == {"manifest.json", ".gitignore"}
+
+
 def test_parse_skillset_package_uses_identify_for_single_skillset() -> None:
     from octop.infra.agents.experts.skillhub_market import _parse_skillset_package
 
