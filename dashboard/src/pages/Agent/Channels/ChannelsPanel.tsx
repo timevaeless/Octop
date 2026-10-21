@@ -3,7 +3,7 @@
  * Lives under Agent/Channels — shared by Personalization tab and Experts drawer.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Form, Button, Empty, Switch, Tooltip } from "antd";
+import { Form, Button, Empty } from "antd";
 import { message } from "@/utils/antdMessage";
 
 import { RefreshCw } from "lucide-react";
@@ -487,17 +487,6 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
             configured: channelByKind.size,
           })}
         </span>
-        <Tooltip title={t("channels.whatsappExtensionHelp")}>
-          <span className={styles.waExtensionToggle}>
-            <span>WhatsApp</span>
-            <Switch
-              size="small"
-              checked={waExtensionEnabled}
-              loading={waExtensionLoading}
-              onChange={(v) => void handleToggleWaExtension(v)}
-            />
-          </span>
-        </Tooltip>
         <Button
           icon={<RefreshCw size={14} />}
           onClick={() => {
@@ -534,6 +523,16 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
                   onMouseEnter={() => setHoverId(key)}
                   onMouseLeave={() => setHoverId(null)}
                   onToggleEnabled={handleToggleEnabled}
+                  extension={
+                    key === "whatsapp"
+                      ? {
+                          enabled: waExtensionEnabled,
+                          loading: waExtensionLoading,
+                          onToggle: (next) =>
+                            void handleToggleWaExtension(next),
+                        }
+                      : undefined
+                  }
                 />
               );
             })}

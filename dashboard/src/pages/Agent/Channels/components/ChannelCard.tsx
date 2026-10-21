@@ -25,6 +25,12 @@ interface ChannelCardProps {
   onMouseEnter: () => void;
   onMouseLeave: () => void;
   onToggleEnabled: (channelKey: ChannelKey, checked: boolean) => void;
+  /** Global extension kill switch (WhatsApp only). Rendered next to the status badge. */
+  extension?: {
+    enabled: boolean;
+    loading: boolean;
+    onToggle: (next: boolean) => void;
+  };
 }
 
 export function ChannelCard({
@@ -40,6 +46,7 @@ export function ChannelCard({
   onMouseEnter,
   onMouseLeave,
   onToggleEnabled,
+  extension,
 }: ChannelCardProps) {
   const { t } = useTranslation();
   const icon = CHANNEL_ICONS[channelKey];
@@ -154,7 +161,27 @@ export function ChannelCard({
         {t(`channels.intro_${channelKey}`, label)}
       </p>
 
-      <div className={styles.cardBottom}>{renderStatusBadge()}</div>
+      <div className={styles.cardBottom}>
+        {renderStatusBadge()}
+        {extension && (
+          <span
+            className={styles.waExtensionToggle}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Tooltip title={t("channels.whatsappExtensionHelp")}>
+              <span className={styles.waExtensionLabel}>
+                {t("channels.whatsappExtension")}
+              </span>
+            </Tooltip>
+            <Switch
+              size="small"
+              checked={extension.enabled}
+              loading={extension.loading}
+              onChange={(checked) => extension.onToggle(checked)}
+            />
+          </span>
+        )}
+      </div>
     </div>
   );
 }

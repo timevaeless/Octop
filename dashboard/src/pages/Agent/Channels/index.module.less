@@ -181,6 +181,10 @@
 /* Bottom row: status badge */
 .cardBottom {
   margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 /* ============ Status Badge ============ */
@@ -710,12 +714,17 @@
   white-space: nowrap;
 }
 
-/* WhatsApp extension kill switch in the toolbar */
+/* WhatsApp extension kill switch, embedded in the WhatsApp card footer */
 .waExtensionToggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--fn-text-secondary);
   cursor: default;
+  margin-left: auto;
+}
+
+.waExtensionLabel {
+  white-space: nowrap;
 }
