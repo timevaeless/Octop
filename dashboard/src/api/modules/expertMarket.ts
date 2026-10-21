@@ -1,4 +1,4 @@
-import { request } from "../request";
+import { request, requestUpload } from "../request";
 
 export interface LocalizedText {
   zh?: string;
@@ -99,6 +99,12 @@ function hubListPath(query: string, scene: string): string {
   return qs ? `/experts/hub?${qs}` : "/experts/hub";
 }
 
+export interface LibraryUploadResponse {
+  id: string;
+  files: number;
+  warnings?: string[];
+}
+
 export const expertMarketApi = {
   list: (query: string, scene = "") =>
     request<ExpertHubListResponse>(hubListPath(query, scene)),
@@ -114,4 +120,21 @@ export const expertMarketApi = {
         body: JSON.stringify(body),
       },
     ),
+
+  /** Admin: install an expert package ZIP into the built-in library. */
+  uploadLibraryExpert: (file: File, force = false) => {
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("force", String(force));
+    return requestUpload<LibraryUploadResponse>(
+      "/experts/library/upload",
+      formData,
+    );
+  },
+
+  /** Admin: remove an uploaded (library-root) expert template. */
+  deleteLibraryExpert: (expertId: string) =>
+    request<void>(`/experts/library/upload/${encodeURIComponent(expertId)}`, {
+      method: "DELETE",
+    }),
 };

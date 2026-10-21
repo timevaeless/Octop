@@ -7,6 +7,7 @@ POST /api/agents/from-expert/{id}  → create agent from bundled expert
 GET  /api/experts/hub              → SkillHub market cards (``?q=&scene=``)
 GET  /api/experts/hub/{slug}       → SkillHub market detail + quick prompts
 POST /api/experts/hub/{slug}/install → create agent from market expert
+POST /api/experts/library/upload   → admin: install an expert package ZIP
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import asyncio
 import json
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import require_agent_owner_row, user_owns_agent
@@ -737,6 +738,81 @@ async def refresh_expert_library(
         "experts_total": len(catalog.list_summaries(include_market_cache=True)),
         "subagents": len(getattr(subagent_catalog, "_subagents", {}) or {}),
     }
+
+
+@router.post(
+    "/experts/library/upload",
+    summary="Upload an expert package ZIP into the library (admin)",
+)
+async def upload_expert_package(
+    file: UploadFile = File(...),  # noqa: B008
+    force: bool = Form(default=False),  # noqa: B008
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Install an expert package (manifest.json + SOUL.md + skills/) from a ZIP.
+
+    The package is validated (zip safety, manifest presence, no BOOTSTRAP.md),
+    unpacked into the library root next to the bundled templates and the
+    catalog is re-scanned. ``force=True`` overwrites an existing template with
+    the same manifest id.
+    """
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    catalog = getattr(server, "expert_catalog", None)
+    if catalog is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "expert catalog is not available")
+
+    from octop.infra.agents.experts.library_upload import (  # noqa: PLC0415
+        install_expert_package,
+    )
+    from octop.infra.skills.skillhub_common import MAX_HTTP_BYTES  # noqa: PLC0415
+
+    raw = await file.read()
+    if len(raw) > MAX_HTTP_BYTES:
+        raise OctopError(
+            ErrorCode.EXPERT_PACKAGE_INVALID,
+            f"expert package exceeds the {MAX_HTTP_BYTES // (1024 * 1024)} MiB transport limit",
+        )
+    return await asyncio.to_thread(install_expert_package, catalog, raw, force=force)
+
+
+@router.delete(
+    "/experts/library/upload/{expert_id}",
+    status_code=204,
+    summary="Remove an uploaded expert template from the library (admin)",
+)
+async def delete_expert_package(
+    expert_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> Response:
+    """Delete a library template directory added via upload and re-scan.
+
+    Only templates that live under the primary library root are removable —
+    installed agent instances keep their seeded copies.
+    """
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    catalog = getattr(server, "expert_catalog", None)
+    if catalog is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "expert catalog is not available")
+    if not catalog.is_bundled(expert_id):
+        raise OctopError(ErrorCode.NOT_FOUND, "expert template not found in library")
+    target = catalog.expert_dir(expert_id)
+    try:
+        in_root = target.resolve().is_relative_to(catalog.root.resolve())
+    except OSError:
+        in_root = False
+    if not in_root:
+        raise OctopError(
+            ErrorCode.FORBIDDEN, "template directory is outside the library root"
+        )
+    import shutil  # noqa: PLC0415
+
+    shutil.rmtree(target, ignore_errors=True)
+    catalog.refresh()
+    return Response(status_code=204)
 
 
 @router.delete(

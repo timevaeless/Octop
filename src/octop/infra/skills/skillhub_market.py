@@ -248,8 +248,13 @@ def _read_zip_member(zf: zipfile.ZipFile, member: zipfile.ZipInfo) -> bytes:
     return b"".join(chunks)
 
 
-def parse_skillhub_package(payload: bytes) -> list[tuple[str, bytes]]:
-    """Validate a SkillHub ZIP and return workspace-relative file payloads."""
+def parse_zip_entries(payload: bytes) -> list[tuple[str, bytes]]:
+    """Validate a ZIP (safety limits, path checks) and return file payloads.
+
+    Wrapper-dir stripping mirrors the common "one top-level folder" archive
+    layout. Unlike :func:`parse_skillhub_package` there is **no** root-file
+    requirement, so callers can enforce their own (SKILL.md, manifest.json…).
+    """
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as zf:
             files: list[tuple[str, bytes]] = []
@@ -267,13 +272,20 @@ def parse_skillhub_package(payload: bytes) -> list[tuple[str, bytes]]:
         raise SkillHubPackageError("SkillHub package is not a valid ZIP archive") from exc
 
     names = {name for name, _content in files}
-    if "SKILL.md" not in names:
-        top_levels = {name.split("/", 1)[0] for name in names}
-        if len(top_levels) == 1:
-            wrapper = next(iter(top_levels))
-            prefix = f"{wrapper}/"
-            if f"{prefix}SKILL.md" in names:
-                files = [(name[len(prefix) :], content) for name, content in files]
+    if names and not any("/" in name for name in names):
+        return files
+    top_levels = {name.split("/", 1)[0] for name in names}
+    if len(top_levels) == 1:
+        wrapper = next(iter(top_levels))
+        prefix = f"{wrapper}/"
+        if any(name.startswith(prefix) for name in names):
+            files = [(name[len(prefix) :], content) for name, content in files]
+    return files
+
+
+def parse_skillhub_package(payload: bytes) -> list[tuple[str, bytes]]:
+    """Validate a SkillHub ZIP and return workspace-relative file payloads."""
+    files = parse_zip_entries(payload)
 
     if not files or "SKILL.md" not in {name for name, _content in files}:
         raise SkillHubPackageError("SkillHub package does not contain a root SKILL.md")
@@ -443,5 +455,6 @@ __all__ = [
     "download_skillhub_package",
     "fetch_skillhub_rankings",
     "parse_skillhub_package",
+    "parse_zip_entries",
     "search_skillhub",
 ]

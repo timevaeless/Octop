@@ -59,6 +59,7 @@ import type { TeamRecord } from "../../api/modules/teams";
 import { TeamCard } from "./components/TeamCard";
 import { PublishedExpertCard } from "./components/PublishedExpertCard";
 import AgentExpertsTable from "./components/AgentExpertsTable";
+import UploadExpertPackageButton from "./components/UploadExpertPackageButton";
 import ExpertMarketTab from "./components/ExpertMarketTab";
 import { OctopEmptyMascot } from "../../components/EmptyState";
 import { pickLocale } from "../../utils/localizedText";
@@ -186,6 +187,18 @@ export default function ExpertsPage() {
       );
     }
   }, [t]);
+
+  const reloadSources = useCallback(async () => {
+    setExpertLoading(true);
+    setPublishedExpertLoading(true);
+    try {
+      setExperts(await fetchExpertLibrary());
+      setPublishedExperts(await fetchPublishedExperts());
+    } finally {
+      setExpertLoading(false);
+      setPublishedExpertLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -750,6 +763,10 @@ export default function ExpertsPage() {
             {t("experts.emptyLibraryHint")}
           </div>
           <div className={styles.emptyActions}>
+            <UploadExpertPackageButton
+              isAdmin={currentUser?.role === "admin"}
+              onSuccess={reloadSources}
+            />
             {rescanButton}
             {refreshButton}
           </div>
@@ -805,6 +822,10 @@ export default function ExpertsPage() {
           </span>
           <div className={styles.gridToolbarRight}>
             {publishedExperts.length === 0 ? toolbarSearch : null}
+            <UploadExpertPackageButton
+              isAdmin={currentUser?.role === "admin"}
+              onSuccess={reloadSources}
+            />
             {rescanButton}
             {refreshButton}
           </div>
