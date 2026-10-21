@@ -73,6 +73,11 @@ type TabKey = "my" | "teams" | "library" | "market";
 type ViewMode = "card" | "table";
 const VIEW_STORAGE_KEY = "octop:experts-view";
 
+// ── 专家市场开关 ─────────────────────────────────────────────────
+// false 时隐藏 market Tab，且页面加载/刷新不再请求 SkillHub（/experts/hub*）。
+// 内置专家 Tab 对外展示为「专家市场」。需要临时恢复时改回 true。
+const EXPERT_MARKET_ENABLED = false;
+
 function loadViewMode(): ViewMode {
   const stored = localStorage.getItem(VIEW_STORAGE_KEY);
   return stored === "table" ? "table" : "card";
@@ -134,7 +139,7 @@ export default function ExpertsPage() {
       tab === "my" ||
       tab === "teams" ||
       tab === "library" ||
-      tab === "market"
+      (tab === "market" && EXPERT_MARKET_ENABLED)
     ) {
       return tab;
     }
@@ -899,15 +904,16 @@ export default function ExpertsPage() {
   ]);
 
   const marketContent = useMemo(
-    () => (
-      <ExpertMarketTab
-        lang={lang}
-        installedExpertIds={agentExpertIds}
-        onRequestCreate={(expert) =>
-          setCreateSource({ kind: "market", expert })
-        }
-      />
-    ),
+    () =>
+      EXPERT_MARKET_ENABLED ? (
+        <ExpertMarketTab
+          lang={lang}
+          installedExpertIds={agentExpertIds}
+          onRequestCreate={(expert) =>
+            setCreateSource({ kind: "market", expert })
+          }
+        />
+      ) : null,
     [agentExpertIds, lang],
   );
 
@@ -946,13 +952,19 @@ export default function ExpertsPage() {
             ),
             children: libraryContent,
           },
-          {
-            key: "market",
-            label: (
-              <TabLabel icon={Store}>{t("experts.expertMarket")}</TabLabel>
-            ),
-            children: marketContent,
-          },
+          ...(EXPERT_MARKET_ENABLED
+            ? [
+                {
+                  key: "market",
+                  label: (
+                    <TabLabel icon={Store}>
+                      {t("experts.expertMarket")}
+                    </TabLabel>
+                  ),
+                  children: marketContent,
+                },
+              ]
+            : []),
         ]}
       />
 
