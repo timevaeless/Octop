@@ -18,7 +18,7 @@
 # ---------------------------------------------------------------------------
 FROM node:20-slim AS frontend-builder
 
-ARG NODE_MAX_OLD_SPACE_SIZE=2048
+ARG NODE_MAX_OLD_SPACE_SIZE=4096
 ARG NPM_REGISTRY=
 WORKDIR /build/dashboard
 
