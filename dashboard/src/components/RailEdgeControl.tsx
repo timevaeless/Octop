@@ -20,6 +20,11 @@ interface RailEdgeControlProps {
    */
   showLine?: boolean;
   /**
+   * ``center`` straddles the divider (folder-tree toggle).
+   * ``before`` / ``after`` sit on either side when two rails share one line.
+   */
+  placement?: "center" | "before" | "after";
+  /**
    * When provided, the edge doubles as a drag handle for resizing the panel.
    * The caller owns the drag session and the resulting size — this component
    * only reports where the drag began. Omit to keep the edge as a plain
@@ -55,7 +60,8 @@ function WideChevron({ dir }: { dir: "left" | "right" }) {
 }
 
 /**
- * Hover-revealed collapse/expand control anchored to a vertical rail line.
+ * Collapse/expand control anchored to a vertical rail line.
+ * Matches the knowledge-base folder tree edge button.
  */
 export default function RailEdgeControl({
   expanded,
@@ -64,6 +70,7 @@ export default function RailEdgeControl({
   label,
   className,
   showLine = true,
+  placement = "center",
   onResizeStart,
 }: RailEdgeControlProps) {
   const { t } = useTranslation();
@@ -75,11 +82,14 @@ export default function RailEdgeControl({
 
   return (
     <div
-      className={`${styles.edge} ${
-        side === "start" ? styles.edgeStart : styles.edgeEnd
-      } ${expanded ? styles.edgeExpanded : styles.edgeCollapsed} ${
-        className ?? ""
-      }`}
+      className={[
+        styles.edge,
+        side === "start" ? styles.edgeStart : styles.edgeEnd,
+        expanded ? null : styles.edgeCollapsed,
+        className,
+      ]
+        .filter(Boolean)
+        .join(" ")}
     >
       {showLine ? <div className={styles.line} aria-hidden /> : null}
       {onResizeStart ? (
@@ -93,7 +103,13 @@ export default function RailEdgeControl({
       ) : null}
       <button
         type="button"
-        className={styles.btn}
+        className={`${styles.btn} ${
+          placement === "before"
+            ? styles.btnBefore
+            : placement === "after"
+            ? styles.btnAfter
+            : ""
+        }`}
         onClick={onToggle}
         aria-label={ariaLabel}
         title={ariaLabel}

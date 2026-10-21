@@ -119,3 +119,6 @@ scripts/lh_image_install_octop_tencentos.sh
 .workbuddy-ai
 .workbuddy.pytest-tmp*
 .pytest-tmp*
+
+# Local conda environment
+.conda-octop/

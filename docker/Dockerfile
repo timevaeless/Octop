@@ -99,6 +99,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libglib2.0-0t64 \
         curl \
         git \
+        ripgrep \
         fonts-noto-cjk \
         unzip \
         zip \
@@ -140,7 +141,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
 #   PATH=/opt/node16/bin:$PATH node -v
 # JDK 源默认清华 Adoptium；Node/Maven 源默认腾讯云（均可用 build-arg 覆盖）。
 #
-# ⚠️ 本层必须位于 `COPY src/` 之前：源码变更只应重跑末尾的 uv sync 层，
+# ⚠️ 本层必须位于 `COPY src/` 之前：源码变更只应重跑末尾的依赖同步层，
 #    不能连坐工具链重下。下载走 cache mount（/opt/toolchain-cache）：
 #    即使本层失效（如改了 mirror 配置），缓存命中即跳过下载，秒级恢复。
 #    JDK 版本动态解析目录页最新版（固定小版本号会随镜像下架 404），
@@ -199,7 +200,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi; \
     fi \
     && uv sync --frozen --no-dev --extra browser --extra local-embedding --extra knowledge-ocr \
-    && rm -rf /tmp/*
+    && .venv/bin/python -c "import cv2, fastembed, huggingface_hub, rapidocr, onnxruntime, pymupdf" \
+    && apt-get purge -y --auto-remove build-essential \
+    && rm -rf /var/lib/apt/lists/* /tmp/*
 
 RUN mkdir -p /data/.octop
 

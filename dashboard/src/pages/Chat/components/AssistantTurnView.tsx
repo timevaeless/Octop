@@ -263,6 +263,24 @@ export default function AssistantTurnView({
 
   const isWrapupTurn = messages.some((item) => item.teamWrapup);
 
+  // A decision-only placeholder has no row yet. Rendering an empty turn
+  // would shift the layout before the avatar and the first status settle.
+  const hasVisibleTurn =
+    Boolean(todoAtTop) ||
+    anyProcessShown ||
+    segmentProcess.some(
+      ({ split }) =>
+        split.answerMessage || (split.errorMessages?.length ?? 0) > 0,
+    ) ||
+    hitlLayout.segments.length > 0 ||
+    Boolean(trailingSplit.answerMessage) ||
+    (trailingSplit.errorMessages?.length ?? 0) > 0 ||
+    hasToolMedia ||
+    knowledgeCitations.length > 0 ||
+    showOpenBrowser ||
+    showEditFile;
+  if (!hasVisibleTurn) return null;
+
   const trailingRounds = useMemo(
     () =>
       roundsEnabled

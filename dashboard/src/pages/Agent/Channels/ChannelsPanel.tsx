@@ -9,7 +9,6 @@ import { message } from "@/utils/antdMessage";
 import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { request } from "../../../api/request";
 import { CardSkeleton } from "../../../components/Skeleton";
 import {
   ChannelCard,
@@ -24,8 +23,11 @@ import {
   normalizeChannelFieldValue,
   normalizeQqGroupContextConfig,
   partitionChannelKeys,
+  replacePluginChannelKinds,
   type ChannelKey,
+  type PluginChannelKindInfo,
 } from "./components";
+import { request } from "../../../api/request";
 import type { ChannelRow } from "./useChannels";
 import type { ChannelFormValues } from "./components/ChannelDrawer";
 import styles from "./index.module.less";
@@ -167,6 +169,27 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
     [fetchChannels, t],
   );
 
+  const [catalogVersion, setCatalogVersion] = useState(0);
+
+  const refreshPluginKinds = useCallback(async () => {
+    try {
+      const kinds = await request<PluginChannelKindInfo[]>(
+        "/channels/plugin-kinds",
+        { method: "GET" },
+      );
+      if (Array.isArray(kinds)) {
+        replacePluginChannelKinds(kinds);
+        setCatalogVersion((version) => version + 1);
+      }
+    } catch {
+      // Keep the existing catalogue when the backend is unavailable.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshPluginKinds();
+  }, [refreshPluginKinds]);
+
   const channelByKind = useMemo<Map<ChannelKey, ChannelRow>>(() => {
     const map = new Map<ChannelKey, ChannelRow>();
     for (const row of channels) {
@@ -178,7 +201,7 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
       }
     }
     return map;
-  }, [channels]);
+  }, [channels, catalogVersion]);
 
   const { featuredChannelKeys, moreChannelKeys } = useMemo(() => {
     const { featured, more } = partitionChannelKeys(
@@ -477,7 +500,10 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
         </Tooltip>
         <Button
           icon={<RefreshCw size={14} />}
-          onClick={() => void fetchChannels()}
+          onClick={() => {
+            void fetchChannels();
+            void refreshPluginKinds();
+          }}
           loading={loading}
         >
           {t("common.refresh")}

@@ -20,7 +20,10 @@ import ScrollToBottomButton from "./ScrollToBottomButton";
 import GeneratingIndicator from "./GeneratingIndicator";
 import TurnTimelineRail from "./TurnTimelineRail";
 import { isLiveAssistantTurn } from "./liveAssistantTurn";
-import { chatGeneratingPhase } from "./generatingGate";
+import {
+  awaitingVisibleAssistantReply,
+  chatGeneratingPhase,
+} from "./generatingGate";
 import { useAutoScroll } from "../hooks/useAutoScroll";
 import { findLastBrowserTurnGroupIndex } from "../utils/messageContent";
 import {
@@ -314,6 +317,10 @@ export default function MessageList(props: MessageListProps) {
 
   const lastMsg = messages[messages.length - 1];
   const hasLiveSpeakers = liveSpeakers.length > 0;
+  const awaitingVisibleReply = useMemo(
+    () => awaitingVisibleAssistantReply(messages),
+    [messages],
+  );
   const {
     showFooter: showGenerating,
     showElapsed: isAwaitingAssistantReply,
@@ -323,6 +330,7 @@ export default function MessageList(props: MessageListProps) {
     loading: Boolean(loading),
     lastMessageRole: lastMsg?.role,
     hasLiveSpeakers,
+    awaitingVisibleReply,
   });
   const liveSpeakerNames = useMemo(
     () =>
@@ -787,6 +795,8 @@ export default function MessageList(props: MessageListProps) {
               showElapsed={isAwaitingAssistantReply}
               membersOnly={generatingMembersOnly}
               speakerNames={liveSpeakerNames}
+              showAvatar={isAwaitingAssistantReply}
+              agentId={agentId}
             />
           </div>
         )}
@@ -799,6 +809,7 @@ export default function MessageList(props: MessageListProps) {
       isAwaitingAssistantReply,
       generatingMembersOnly,
       liveSpeakerNames,
+      agentId,
       refreshFooter,
     ],
   );

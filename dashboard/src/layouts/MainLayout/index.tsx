@@ -233,6 +233,11 @@ export default function MainLayout() {
                 expanded={!collapsed}
                 onToggle={handleNavRailToggle}
                 side="end"
+                placement={
+                  isChatRoute && !isMinimalLayout && !chatSidebarOpen
+                    ? "before"
+                    : "center"
+                }
                 onResizeStart={collapsed ? undefined : handleNavResizeStart}
               />
             )}
