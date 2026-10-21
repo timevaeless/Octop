@@ -406,7 +406,7 @@ def test_custom_field_preview_redacts_secrets():
 def test_gateway_weknora_tools_and_search(monkeypatch: pytest.MonkeyPatch):
     from octop.infra.connectors.gateway.adapters import weknora
 
-    calls: list[tuple[str, str, dict[str, object] | None]] = []
+    calls: list[tuple[str, str, dict[str, object] | None, dict[str, object] | None]] = []
 
     def _fake_request(
         _creds: dict[str, object],
@@ -416,10 +416,10 @@ def test_gateway_weknora_tools_and_search(monkeypatch: pytest.MonkeyPatch):
         params: dict[str, object] | None = None,
         body: dict[str, object] | None = None,
     ) -> dict[str, object]:
-        calls.append((method, path, body))
+        calls.append((method, path, params, body))
         if path == "/knowledge-bases":
             return {"success": True, "data": [{"id": "kb-1", "name": "Docs"}]}
-        assert params == {"resource_urls": "handle"}
+        assert params == {"resource_urls": params_mode[0]}
         return {
             "success": True,
             "data": [
@@ -433,6 +433,7 @@ def test_gateway_weknora_tools_and_search(monkeypatch: pytest.MonkeyPatch):
             ],
         }
 
+    params_mode = ["public"]
     monkeypatch.setattr(weknora, "_request", _fake_request)
     listed = handle_mcp_request(
         kind="weknora",
@@ -452,9 +453,65 @@ def test_gateway_weknora_tools_and_search(monkeypatch: pytest.MonkeyPatch):
         )
     )
     assert result["knowledge_base_ids"] == ["kb-1"]
-    assert len(result["passages"][0]["content"]) == 1200
-    assert result["passages"][0]["truncated"] is True
-    assert calls[-1][2] == {"query": "install", "knowledge_base_ids": ["kb-1"]}
+    # 1300-char content stays below the 3000-char clip, so it passes through
+    # verbatim with truncated=False.
+    assert len(result["passages"][0]["content"]) == 1300
+    assert result["passages"][0]["truncated"] is False
+    assert calls[-1][3] == {"query": "install", "knowledge_base_ids": ["kb-1"]}
+    # Primary attempt uses public URLs (direct links); only a 403 from a
+    # KB-scoped API key falls back to internal handles.
+    search_calls = [c for c in calls if c[1] == "/knowledge-search"]
+    assert [(c[2], c[3]) for c in search_calls] == [
+        ({"resource_urls": "public"}, {"query": "install", "knowledge_base_ids": ["kb-1"]})
+    ]
+
+
+def test_gateway_weknora_search_falls_back_to_handles_on_403(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from octop.infra.connectors.gateway.adapters import weknora
+
+    seen_params: list[str] = []
+
+    def _fake_request(
+        _creds: dict[str, object],
+        method: str,
+        path: str,
+        *,
+        params: dict[str, object] | None = None,
+        body: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        if method == "GET" and path == "/knowledge-bases":
+            return {"success": True, "data": [{"id": "kb-1", "name": "Docs"}]}
+        assert method == "POST" and path == "/knowledge-search"
+        mode = str(params["resource_urls"])
+        seen_params.append(mode)
+        if mode == "public":
+            raise ValueError("HTTP 403: forbidden for kb-scoped key")
+        return {
+            "success": True,
+            "data": [
+                {
+                    "knowledge_id": "doc-1",
+                    "knowledge_title": "Guide",
+                    "chunk_index": 1,
+                    "score": 0.8,
+                    "content": "y" * 100,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(weknora, "_request", _fake_request)
+    result = json.loads(
+        weknora.call_tool(
+            {"base_url": "http://127.0.0.1:8080/api/v1"},
+            "search",
+            {"query": "install"},
+        )
+    )
+    assert result["passages"][0]["truncated"] is False
+    # public first, internal handle after the 403.
+    assert seen_params == ["public", "handle"]
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,18 @@
     "zh": "阶段签核制全栈开发数字员工：需求理解 → 计划设计（Gate A）→ 开发 · 单测（Gate B）→ 交付闭环 → 记忆沉淀（Gate C），每道关口人工确认；git worktree 隔离开发，提交物链全程留痕。",
     "en": "Sign-off gated full-stack dev agent: understand → design (Gate A) → code & test (Gate B) → delivery → knowledge capture (Gate C), each gate confirmed by you; develops in git worktrees with a full artifact chain."
   },
+  "task_examples": {
+    "zh": [
+      "给登录模块加验证码校验，先出设计方案等我过 Gate A 再动手",
+      "修复订单列表偶发 500 的问题，按缺陷流程先复现定位再修",
+      "把部署脚本的镜像构建改成多阶段构建，并补回归测试"
+    ],
+    "en": [
+      "Add captcha validation to the login module; show me the design first and wait for Gate A",
+      "Fix the intermittent 500 on the order list; follow the bug flow — reproduce before fixing",
+      "Convert the deploy script's image build to multi-stage and add regression tests"
+    ]
+  },
   "welcome_message": {
     "zh": "描述你的开发需求，我按签核制流程推进：理解 → 设计 → Gate A → 编码 → 测试 → Gate B → 交付。首次使用请准备 git 仓库地址与访问凭证。",
     "en": "Describe your dev task — I'll drive the sign-off flow: understand → design → Gate A → code → test → Gate B → deliver. First time? Have your git repo URL and credentials ready."

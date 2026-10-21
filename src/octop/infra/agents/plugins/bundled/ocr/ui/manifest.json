@@ -1,0 +1,3 @@
+{
+  "renderers": [{ "id": "ocr_text_card", "tools": ["ocr_recognize"] }]
+}

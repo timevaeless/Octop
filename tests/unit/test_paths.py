@@ -40,39 +40,46 @@ def test_agent_workspace_platform_adopts_legacy(tmp_path: Path):
     assert p.agent_workspace("agent01") == legacy
 
 
-def test_agent_workspace_tenant_scoped(tmp_path: Path):
+def test_agent_workspace_ignores_org_id(tmp_path: Path):
+    # 2026-10-08 simplification: attribution never moves directories —
+    # ``org_id`` is accepted for call-site compatibility and ignored.
     p = PathLayout(tmp_path / ".octop")
-    ws = p.agent_workspace("agent01", org_id="org-a")
-    assert ws == tmp_path / ".octop" / "orgs" / "org-a" / "agents" / "agent01"
-    # Tenant agent adopts its pre-existing legacy flat dir too.
+    assert p.agent_workspace("agent01", org_id="org-a") == (
+        tmp_path / ".octop" / "shared" / "agents" / "agent01"
+    )
+    # Pre-existing legacy flat dir keeps working (adopt-legacy), tenant or not.
     legacy = tmp_path / ".octop" / "agents" / "agent01"
     legacy.mkdir(parents=True)
     assert p.agent_workspace("agent01", org_id="org-a") == legacy
-    # Scoped dir wins once it exists.
-    scoped = tmp_path / ".octop" / "orgs" / "org-a" / "agents" / "agent01"
-    scoped.mkdir(parents=True)
-    assert p.agent_workspace("agent01", org_id="org-a") == scoped
 
 
-def test_org_dir_sanitizes_segment(tmp_path: Path):
+def test_org_id_segment_never_reaches_filesystem(tmp_path: Path):
+    # There is no per-org directory plane anymore, so even a hostile
+    # org_id must not influence path resolution.
     p = PathLayout(tmp_path / ".octop")
-    assert p.org_dir("cheryfs") == tmp_path / ".octop" / "orgs" / "cheryfs"
-    assert p.org_dir("../evil") == tmp_path / ".octop" / "orgs" / "___evil"
+    assert p.agent_workspace("agent01", org_id="../evil") == (
+        tmp_path / ".octop" / "shared" / "agents" / "agent01"
+    )
+    assert p.published_expert_snapshot_dir("e1", org_id="../evil") == (
+        tmp_path / ".octop" / "shared" / "published_experts" / "e1"
+    )
+    assert p.knowledge_base_dir("kb1", org_id="../evil") == (
+        tmp_path / ".octop" / "shared" / "knowledge" / "kb1"
+    )
 
 
 def test_published_expert_snapshot_dir(tmp_path: Path):
     p = PathLayout(tmp_path / ".octop")
-    # Platform expert → shared tree; legacy flat dir adopted when present.
+    # Any attribution → shared tree; legacy flat dir adopted when present.
     assert p.published_expert_snapshot_dir("e1") == (
         tmp_path / ".octop" / "shared" / "published_experts" / "e1"
+    )
+    assert p.published_expert_snapshot_dir("e2", org_id="org-b") == (
+        tmp_path / ".octop" / "shared" / "published_experts" / "e2"
     )
     legacy = tmp_path / ".octop" / "published_experts" / "e1"
     legacy.mkdir(parents=True)
     assert p.published_expert_snapshot_dir("e1") == legacy
-    # Tenant expert → orgs tree.
-    assert p.published_expert_snapshot_dir("e2", org_id="org-b") == (
-        tmp_path / ".octop" / "orgs" / "org-b" / "published_experts" / "e2"
-    )
 
 
 def test_knowledge_base_dir(tmp_path: Path):
@@ -80,14 +87,13 @@ def test_knowledge_base_dir(tmp_path: Path):
     assert p.knowledge_base_dir("kb1") == (
         tmp_path / ".octop" / "shared" / "knowledge" / "kb1"
     )
+    assert p.knowledge_base_dir("kb2", org_id="org-c") == (
+        tmp_path / ".octop" / "shared" / "knowledge" / "kb2"
+    )
     # Adopt-legacy is per kb_id: once the flat dir exists it wins for that KB.
     legacy = tmp_path / ".octop" / "knowledge" / "kb1"
     legacy.mkdir(parents=True)
     assert p.knowledge_base_dir("kb1", org_id="org-c") == legacy
-    # A KB without a legacy dir resolves into its org tree.
-    assert p.knowledge_base_dir("kb2", org_id="org-c") == (
-        tmp_path / ".octop" / "orgs" / "org-c" / "knowledge" / "kb2"
-    )
 
 
 def test_ensure_root_creates_dir(tmp_path: Path):
@@ -102,10 +108,10 @@ def test_ensure_agent_workspace(tmp_path: Path):
     out = p.ensure_agent_workspace("a1")
     assert out.is_dir()
     assert out == tmp_path / ".octop" / "shared" / "agents" / "a1"
-    # Tenant-scoped path
+    # Tenant-scoped call sites land in the shared tree too (org_id ignored).
     out = p.ensure_agent_workspace("a2", org_id="org-a")
     assert out.is_dir()
-    assert out == tmp_path / ".octop" / "orgs" / "org-a" / "agents" / "a2"
+    assert out == tmp_path / ".octop" / "shared" / "agents" / "a2"
 
 
 def test_backups_dir(tmp_path: Path) -> None:
