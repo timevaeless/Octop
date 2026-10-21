@@ -29,6 +29,11 @@ import { collectTurnToolMedia } from "../../../utils/collectTurnToolMedia";
 import { collectTurnKnowledgeCitations } from "../../../utils/collectTurnKnowledgeCitations";
 import { KnowledgeCitationsStrip } from "./KnowledgeCitationsStrip";
 import { messageSpeakerId } from "../utils/messageGrouping";
+import {
+  isRoundLayoutEnabled,
+  splitTurnRounds,
+  TurnRoundsBlock,
+} from "../utils/turnRoundLayout";
 import styles from "../index.module.less";
 
 interface AssistantTurnViewProps {
@@ -171,13 +176,23 @@ export default function AssistantTurnView({
     [turnStreaming],
   );
 
+  // T4 round layout (WorkBuddy-style layering) — **live-only**: rounds render
+  // while the turn is streaming, and the settled/history state falls back to
+  // the legacy single-fold rendering (WorkBuddy "已完成" style). null keeps
+  // the legacy JSX below byte-identical. See utils/turnRoundLayout.tsx.
+  const roundsEnabled =
+    !compactProcess && isRoundLayoutEnabled() && turnStreaming;
+
   const segmentProcess = useMemo(
     () =>
       hitlLayout.segments.map((seg) => ({
         split: splitAssistantTurn(seg.processMessages, splitOpts),
         hitl: seg.hitlMessage,
+        rounds: roundsEnabled
+          ? splitTurnRounds(seg.processMessages, splitOpts)
+          : null,
       })),
-    [hitlLayout, splitOpts],
+    [hitlLayout, splitOpts, roundsEnabled],
   );
   const trailingSplit = useMemo(
     () => splitAssistantTurn(hitlLayout.trailingMessages, splitOpts),
@@ -248,10 +263,18 @@ export default function AssistantTurnView({
 
   const isWrapupTurn = messages.some((item) => item.teamWrapup);
 
+  const trailingRounds = useMemo(
+    () =>
+      roundsEnabled
+        ? splitTurnRounds(hitlLayout.trailingMessages, splitOpts)
+        : null,
+    [roundsEnabled, hitlLayout, splitOpts],
+  );
+
   return (
     <div className={styles.assistantTurn}>
       {todoAtTop ? <div className={styles.turnInset}>{todoAtTop}</div> : null}
-      {segmentProcess.map(({ split, hitl }, idx) => {
+      {segmentProcess.map(({ split, hitl, rounds: segRounds }, idx) => {
         const showProcess = !compactProcess && hasProcessContent(split);
         // Freeze process spinner while a pending approval card is open.
         const processStreaming =
@@ -261,6 +284,29 @@ export default function AssistantTurnView({
           hitlLayout.trailingMessages.length === 0;
         return (
           <div key={hitl.id} className={styles.hitlSegment}>
+            {segRounds ? (
+              <TurnRoundsBlock
+                rounds={segRounds}
+                isStreaming={processStreaming}
+                onAcpPermissionSelect={onAcpPermissionSelect}
+                hideToolMedia={hasToolMedia}
+                foldAgentId={speakerAgentId}
+                agentId={agentId}
+                todoPanel={
+                  idx === firstProcessSegmentIdx ? todoPanel : null
+                }
+                onRegenerate={onRegenerate}
+                onDisableStreamUsage={onDisableStreamUsage}
+                onEditUserMessage={onEditUserMessage}
+                onForkAssistantMessage={onForkAssistantMessage}
+                forkDisabled={forkDisabled}
+                forkDisabledHint={forkDisabledHint}
+                onRunShellCommand={onRunShellCommand}
+                shellCommandDisabled={shellCommandDisabled}
+                shellCommandDisabledTitle={shellCommandDisabledTitle}
+              />
+            ) : (
+              <>
             {showProcess ? (
               <>
                 <TurnProcessBlocks
@@ -309,6 +355,8 @@ export default function AssistantTurnView({
               shellCommandDisabled={shellCommandDisabled}
               shellCommandDisabledTitle={shellCommandDisabledTitle}
             />
+              </>
+            )}
             <MessageBubble
               message={hitl}
               agentId={agentId}
@@ -318,6 +366,39 @@ export default function AssistantTurnView({
           </div>
         );
       })}
+      {trailingRounds ? (
+        <>
+          <TurnRoundsBlock
+            rounds={trailingRounds}
+            isStreaming={turnStreaming && !hasPendingHitl}
+            onAcpPermissionSelect={onAcpPermissionSelect}
+            hideToolMedia={hasToolMedia}
+            foldAgentId={speakerAgentId}
+            agentId={agentId}
+            todoPanel={firstProcessSegmentIdx < 0 ? todoPanel : null}
+            onRegenerate={onRegenerate}
+            onDisableStreamUsage={onDisableStreamUsage}
+            onEditUserMessage={onEditUserMessage}
+            onForkAssistantMessage={onForkAssistantMessage}
+            forkDisabled={forkDisabled}
+            forkDisabledHint={forkDisabledHint}
+            onRunShellCommand={onRunShellCommand}
+            shellCommandDisabled={shellCommandDisabled}
+            shellCommandDisabledTitle={shellCommandDisabledTitle}
+          />
+          {hasToolMedia && (
+            <div className={styles.turnInset}>
+              <ToolMediaStrip
+                images={toolMedia.images}
+                videos={toolMedia.videos}
+                files={toolMedia.files}
+                agentId={speakerAgentId}
+              />
+            </div>
+          )}
+        </>
+      ) : (
+        <>
       {showTrailingProcess ? (
         <>
           <TurnProcessBlocks
@@ -389,6 +470,8 @@ export default function AssistantTurnView({
         shellCommandDisabled={shellCommandDisabled}
         shellCommandDisabledTitle={shellCommandDisabledTitle}
       />
+        </>
+      )}
       {knowledgeCitations.length > 0 ? (
         <div className={styles.turnInset}>
           <KnowledgeCitationsStrip citations={knowledgeCitations} />
