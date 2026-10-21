@@ -414,16 +414,6 @@ export default function AssistantTurnView({
           ) : null}
         </>
       ) : null}
-      {hasToolMedia && (
-        <div className={styles.turnInset}>
-          <ToolMediaStrip
-            images={toolMedia.images}
-            videos={toolMedia.videos}
-            files={toolMedia.files}
-            agentId={speakerAgentId}
-          />
-        </div>
-      )}
       {trailingSplit.answerMessage ? (
         <div
           className={`${styles.assistantTurnAnswer}${
@@ -470,6 +460,16 @@ export default function AssistantTurnView({
         shellCommandDisabled={shellCommandDisabled}
         shellCommandDisabledTitle={shellCommandDisabledTitle}
       />
+      {hasToolMedia && (
+        <div className={styles.turnInset}>
+          <ToolMediaStrip
+            images={toolMedia.images}
+            videos={toolMedia.videos}
+            files={toolMedia.files}
+            agentId={speakerAgentId}
+          />
+        </div>
+      )}
         </>
       )}
       {knowledgeCitations.length > 0 ? (

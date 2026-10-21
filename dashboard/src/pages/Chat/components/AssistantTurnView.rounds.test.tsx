@@ -155,6 +155,30 @@ describe("AssistantTurnView round layout", () => {
     expect(screen.getByText("请求失败")).toBeInTheDocument();
   });
 
+  it("renders tool file attachments below the final answer when settled", () => {
+    const FILE_TURN = [
+      completedTool("t1", "write_report"),
+      message({ id: "a1", content: "结论：日报已生成。" }),
+    ];
+    // The completed tool carries a structured file attachment.
+    FILE_TURN[0].attachments = [
+      {
+        url: "/api/agents/solo/files/report.xlsx",
+        filename: "report.xlsx",
+        kind: "file" as const,
+      },
+    ];
+    const { container } = render(<AssistantTurnView messages={FILE_TURN} />);
+
+    const answer = screen.getByText("结论：日报已生成。");
+    const file = screen.getByText("report.xlsx");
+    // The attachment pill must come after the answer bubble in document order.
+    expect(
+      answer.compareDocumentPosition(file) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container).toBeTruthy();
+  });
+
   it("transitions from layered streaming to the legacy settled form", () => {
     const { rerender } = render(
       <AssistantTurnView messages={LIVE_ROUND_TURN} isTurnInProgress />,
