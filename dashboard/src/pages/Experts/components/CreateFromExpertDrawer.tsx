@@ -358,8 +358,16 @@ export default function CreateFromExpertDrawer({
           });
         }
         // Published templates carry the publisher's composer defaults
-        // (2026-09-29): prefill so installs work out of the box; the
-        // installer can still change or clear any of them.
+        // (2026-09-29); builtin manifests may declare default_mcp_servers as
+        // semantic references the backend resolves onto the viewer's mount
+        // keys (2026-10-21). The template-install guard in
+        // ExpertComposerDefaultsFields drops anything the installer cannot
+        // use, so both paths degrade safely.
+        if (source.kind === "builtin") {
+          form.setFieldsValue({
+            mcp_servers: data.default_mcp_servers ?? [],
+          });
+        }
         if (source.kind === "published") {
           form.setFieldsValue({
             knowledge_base_ids: data.default_knowledge_base_ids ?? [],

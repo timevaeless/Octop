@@ -28,7 +28,12 @@ from octop.infra.agents.experts.avatar import (
     public_portrait_icon_url,
     read_snapshot_avatar,
 )
-from octop.infra.agents.visibility import visible_knowledge_bases, visible_mcp_servers
+from octop.infra.agents.experts.builtin_mcp_defaults import (
+    detail_defaults as builtin_detail_defaults,
+)
+from octop.infra.agents.experts.builtin_mcp_defaults import (
+    install_defaults as builtin_install_defaults,
+)
 from octop.infra.agents.experts.catalog import (
     MANIFEST_FILENAME,
     apply_workspace_quick_prompts,
@@ -75,6 +80,7 @@ from octop.infra.agents.experts.skillhub_market import (
     browse_skillsets,
     fetch_skillset,
 )
+from octop.infra.agents.visibility import visible_knowledge_bases, visible_mcp_servers
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.history.trajectory.settings import apply_enable_trajectory
 from octop.infra.utils.locale import resolve_user_locale
@@ -495,6 +501,31 @@ def _published_summary_dict(row: Any, server: Any) -> dict[str, Any]:
     }
 
 
+def _installer_scoped_mcp_defaults(defaults: list[str], registry: Any, user_id: int) -> list[str]:
+    """Rewrite publisher-scoped mount names onto *user_id*'s visible keys.
+
+    Stored template defaults carry the PUBLISHER's mount names (a bare
+    custom-MCP server name in the publisher's own scope, or a
+    ``kind__<instance>`` key pointing at the publisher's attachment row).
+    The install endpoint already rewrites them via
+    :func:`rewrite_installer_mount_names`; the composer's template-install
+    guard compares the detail payload verbatim against the viewer-scoped
+    assignable list, so raw publisher keys made the guard drop defaults the
+    installer can actually use — 「已跳过N项资源」 while the picker still
+    offered the same connector under its viewer-scoped key (2026-10-21).
+    Uses the exact same translation and the same visible set as the install
+    path, so detail prefill, picker and save-time validation agree.
+    Untranslatable names (dead instance keys, ambiguous duplicates) pass
+    through untouched — the caller's guard keeps its skip-and-warn behaviour.
+    """
+    visible_servers = {
+        str(s.get("mcp_server_name"))
+        for s in visible_mcp_servers(registry, user_id)
+        if s.get("mcp_server_name")
+    }
+    return rewrite_installer_mount_names(list(defaults), visible_servers)
+
+
 def _require_published_expert(server: Any, expert_id: str) -> Any:
     assert server.services is not None
     return require_published_expert(server.services, expert_id)
@@ -560,8 +591,15 @@ async def get_published_expert(
     if (snapshot_dir / MANIFEST_FILENAME).is_file():
         files.insert(0, MANIFEST_FILENAME)
     welcome_payload = await asyncio.to_thread(snapshot_welcome_payload, snapshot_dir)
+    summary = _published_summary_dict(row, server)
+    assert server.app_runtime is not None
+    summary["default_mcp_servers"] = _installer_scoped_mcp_defaults(
+        summary["default_mcp_servers"],
+        server.app_runtime.agent_registry,
+        user.id,
+    )
     return {
-        **_published_summary_dict(row, server),
+        **summary,
         "welcome_message": welcome_payload["welcome_message"],
         "quick_prompts": welcome_payload["quick_prompts"],
         "files": files,
@@ -709,6 +747,68 @@ async def upgrade_library_expert_instances(
 
     report = await upgrade_for_template_name(server, template_name)
     return report.as_dict()
+
+
+@router.get(
+    "/experts/library/{expert_id}/defaults",
+    summary="Read a builtin expert's default MCP connector references (admin)",
+)
+async def get_library_expert_defaults(
+    expert_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Persisted semantic refs plus this admin's picker options (admin only)."""
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    catalog = getattr(server, "expert_catalog", None)
+    if catalog is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "expert catalog is not available")
+    from octop.infra.agents.experts.library_defaults import defaults_payload
+
+    assert server.app_runtime is not None
+    rows = visible_mcp_servers(server.app_runtime.agent_registry, user.id)
+    return await asyncio.to_thread(defaults_payload, catalog, rows, expert_id)
+
+
+@router.put(
+    "/experts/library/{expert_id}/defaults",
+    summary="Update a builtin expert's default MCP connector references (admin)",
+)
+async def put_library_expert_defaults(
+    expert_id: str,
+    body: dict[str, Any],
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Persist normalized semantic refs into the package manifest (admin only).
+
+    Accepts semantic refs or mount keys (picker values); mount keys are
+    stripped to their stable part — instance ids never reach the manifest.
+    An empty list removes the key.
+    """
+    if not bool(getattr(user, "is_admin", False)):
+        raise OctopError(ErrorCode.FORBIDDEN, "admin only")
+    catalog = getattr(server, "expert_catalog", None)
+    if catalog is None:
+        raise OctopError(ErrorCode.NOT_FOUND, "expert catalog is not available")
+    from octop.infra.agents.experts.library_defaults import (
+        defaults_payload,
+        write_defaults,
+    )
+
+    raw_values = body.get("default_mcp_servers")
+    if raw_values is None:
+        raw_values = []
+    if not isinstance(raw_values, list):
+        raise OctopError(
+            ErrorCode.EXPERT_PACKAGE_INVALID,
+            "default_mcp_servers must be a list of strings",
+        )
+    assert server.app_runtime is not None
+    rows = visible_mcp_servers(server.app_runtime.agent_registry, user.id)
+    await asyncio.to_thread(write_defaults, catalog, expert_id, raw_values)
+    return await asyncio.to_thread(defaults_payload, catalog, rows, expert_id)
 
 
 @router.post(
@@ -1072,14 +1172,23 @@ async def install_expert_hub_item(
 @router.get("/experts/{expert_id}")
 async def get_expert(
     expert_id: str,
-    _: Any = Depends(current_user),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     catalog = server.expert_catalog
     expert = None if catalog is None else catalog.get(expert_id)
     if expert is None:
         raise OctopError(ErrorCode.NOT_FOUND, f"expert {expert_id!r} not found")
-    return _expert_dict(expert, catalog, include_file_contents=True)
+    result = _expert_dict(expert, catalog, include_file_contents=True)
+    # T4 hook (builtin_mcp_defaults): manifest composer defaults resolved onto
+    # the viewer's mount keys; unresolved refs pass through for the composer
+    # guard to skip-and-warn. Deleting the module + this hook restores the
+    # previous shape (no defaults on builtin detail).
+    assert server.app_runtime is not None
+    result["default_mcp_servers"] = builtin_detail_defaults(
+        catalog, expert_id, server.app_runtime.agent_registry, user.id
+    )
+    return result
 
 
 @router.post("/agents/from-expert/{expert_id}", status_code=201)
@@ -1107,11 +1216,26 @@ async def create_agent_from_expert(
     )
     if package_ids:
         server.app_runtime.agent_registry.assert_backend_supports_skill_packages(body.backend)
+    # T4 hook (builtin_mcp_defaults): when the installer does not pass their
+    # own picks, fall back to the manifest's composer defaults resolved onto
+    # the installer's mount keys and soft-filtered to the visible set (same
+    # contract as the published-template install). Deleting the module + this
+    # hook restores the previous shape (no defaults on builtin installs).
+    mcp_body = body.mcp_servers
+    if mcp_body is None:
+        # ``or None`` keeps the no-manifest-defaults shape identical to the
+        # pre-hook behaviour (mcp_servers=None, not an empty list).
+        mcp_body = (
+            builtin_install_defaults(
+                catalog, expert_id, server.app_runtime.agent_registry, user.id
+            )
+            or None
+        )
     kb_ids, servers = _validated_session_defaults(
         server.app_runtime.agent_registry,
         user.id,
         knowledge_base_ids=body.knowledge_base_ids,
-        mcp_servers=body.mcp_servers,
+        mcp_servers=mcp_body,
     )
 
     config_extra: dict[str, Any] = {}

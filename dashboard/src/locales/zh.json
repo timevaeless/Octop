@@ -926,6 +926,18 @@
     "uploadInstall": "安装模板",
     "uploadInstalling": "安装中…",
     "uploadSuccess": "已安装模板 {{id}}（{{count}} 个文件）",
+    "defaults": {
+      "title": "默认连接器 · {{label}}",
+      "entry": "配置默认连接器",
+      "hint": "选择安装该内置专家时默认预填的连接器。保存写入模板 manifest，安装时按每个用户的权限动态解析成其实际挂载。",
+      "placeholder": "从可分配连接器中选择",
+      "footnote": "存的是语义名而非具体挂载键；无权限的用户安装时对应项会被跳过并提示，其余照常预填。",
+      "save": "保存",
+      "saving": "保存中…",
+      "saveSuccess": "已保存默认连接器",
+      "saveFailed": "保存默认连接器失败",
+      "loadFailed": "加载默认连接器失败"
+    },
     "uploadFailed": "上传失败",
     "emptyMarket": "暂无可用的市场专家",
     "emptyMarketHint": "可以换个关键词，或稍后再试。",

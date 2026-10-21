@@ -926,6 +926,18 @@
     "uploadInstall": "Install template",
     "uploadInstalling": "Installing…",
     "uploadSuccess": "Installed template {{id}} ({{count}} files)",
+    "defaults": {
+      "title": "Default connectors · {{label}}",
+      "entry": "Configure default connectors",
+      "hint": "Pick connectors prefilled by default when this builtin expert is installed. Saving writes the template manifest; values resolve against each installer's permissions at install time.",
+      "placeholder": "Select from assignable connectors",
+      "footnote": "Semantic names are stored, not concrete mount keys; items an installer cannot use are skipped with a notice while the rest prefill as usual.",
+      "save": "Save",
+      "saving": "Saving…",
+      "saveSuccess": "Default connectors saved",
+      "saveFailed": "Failed to save default connectors",
+      "loadFailed": "Failed to load default connectors"
+    },
     "uploadFailed": "Upload failed",
     "emptyMarket": "No market experts available",
     "emptyMarketHint": "Try another keyword or check again later.",

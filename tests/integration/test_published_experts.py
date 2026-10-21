@@ -204,6 +204,77 @@ async def test_install_published_expert_does_not_copy_source_composer_defaults(
     assert owner_connector.json()["mcp_server_name"] not in chosen["mcp_servers"]
 
 
+async def test_detail_rewrites_publisher_mount_names_for_installer(
+    env: tuple[Any, Any, dict[str, str]],
+) -> None:
+    """The 2026-10-21 guard/picker inconsistency.
+
+    The template stamps the publisher's own-scope mount name (a bare
+    custom-MCP server name); the installer sees the same server under
+    ``custom__<parent>__<name>``. The detail endpoint must hand the
+    installer the rewritten key — otherwise the composer's guard drops the
+    default (「已跳过N项资源」) while the picker still offers the connector.
+    """
+    client, _server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(env)
+
+    put = await client.put(
+        "/api/connectors/custom-mcp",
+        headers=owner_auth,
+        json={
+            "servers": {
+                "wren-test": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/mcp",
+                    "shared": True,
+                }
+            }
+        },
+    )
+    assert put.status_code == 200, put.text
+    patched = await client.patch(
+        f"/api/agents/{source_agent_id}",
+        headers=owner_auth,
+        json={"mcp_servers": ["wren-test"]},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["mcp_servers"] == ["wren-test"]
+
+    published = await client.post(
+        f"/api/agents/{source_agent_id}/publish-expert",
+        headers=owner_auth,
+        json={"name": "Published with mount-name defaults"},
+    )
+    assert published.status_code == 201, published.text
+    expert_id = published.json()["id"]
+
+    listed = await client.get("/api/connector-instances", headers=peer_auth)
+    assert listed.status_code == 200, listed.text
+    shared = next(
+        row
+        for row in listed.json()
+        if row.get("shared") is True and row.get("mcp_server_name", "").endswith("__wren-test")
+    )
+    installer_key = shared["mcp_server_name"]
+
+    # The stored default is the publisher's bare name; the installer's detail
+    # view must hand out the installer-scoped key instead.
+    assert published.json()["default_mcp_servers"] == ["wren-test"]
+    detail = await client.get(f"/api/experts/published/{expert_id}", headers=peer_auth)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["default_mcp_servers"] == [installer_key]
+
+    installed = await client.post(
+        f"/api/experts/published/{expert_id}/install",
+        headers=peer_auth,
+        json={"name": "Installer fork with translated default"},
+    )
+    assert installed.status_code == 201, installed.text
+    fork = (
+        await client.get(f"/api/agents/{installed.json()['agent_id']}", headers=peer_auth)
+    ).json()
+    assert fork["mcp_servers"] == [installer_key]
+
+
 @posix_only
 async def test_install_keeps_source_quick_prompts_when_publish_body_omits_them(
     env: tuple[Any, Any, dict[str, str]],

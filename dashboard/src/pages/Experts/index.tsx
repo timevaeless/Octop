@@ -54,6 +54,7 @@ import EditAgentDrawer from "./components/EditAgentDrawer";
 import CreateFromExpertDrawer, {
   type CreateFromTemplateSource,
 } from "./components/CreateFromExpertDrawer";
+import ExpertDefaultsDrawer from "./components/ExpertDefaultsDrawer";
 import TeamDrawer from "./components/TeamDrawer";
 import type { TeamRecord } from "../../api/modules/teams";
 import { TeamCard } from "./components/TeamCard";
@@ -344,6 +345,11 @@ export default function ExpertsPage() {
   // ── Create-from-expert Drawer / Market create success ──────────
   const [createSource, setCreateSource] =
     useState<CreateFromTemplateSource | null>(null);
+
+  // ── Builtin-expert default-connectors editor (platform admin) ──
+  const [defaultsExpert, setDefaultsExpert] = useState<ExpertSummary | null>(
+    null,
+  );
 
   const handleCreated = useCallback(
     (agentId: string, _agentName?: string) => {
@@ -851,6 +857,8 @@ export default function ExpertsPage() {
                 expert={expert}
                 lang={lang}
                 isInstalled={agentExpertIds.has(expert.id)}
+                canConfigureDefaults={currentUser?.role === "admin"}
+                onConfigureDefaults={(item) => setDefaultsExpert(item)}
                 onCreate={(item) =>
                   setCreateSource({ kind: "builtin", expert: item })
                 }
@@ -948,6 +956,14 @@ export default function ExpertsPage() {
         lang={lang}
         onClose={() => setCreateSource(null)}
         onCreated={handleCreated}
+      />
+
+      <ExpertDefaultsDrawer
+        expertId={defaultsExpert?.id ?? null}
+        expertLabel={
+          defaultsExpert ? pickLocale(defaultsExpert.label, lang) || defaultsExpert.id : ""
+        }
+        onClose={() => setDefaultsExpert(null)}
       />
 
       <TeamDrawer

@@ -1,7 +1,8 @@
 // dashboard/src/pages/Experts/components/ExpertCard.tsx
 import { memo } from "react";
+import { Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
-import { CheckCircle } from "lucide-react";
+import { CheckCircle, Settings2 } from "lucide-react";
 import { pickLocale } from "../../../utils/localizedText";
 import { ExpertIcon, resolveExpertAvatarUrl } from "./iconForName";
 import type { QuickPrompt } from "./welcomeManifest";
@@ -25,6 +26,9 @@ interface ExpertCardProps {
   lang: "zh" | "en";
   isInstalled: boolean;
   onCreate: (expert: ExpertSummary) => void;
+  /** Platform-admin only: open the default-connectors editor. */
+  canConfigureDefaults?: boolean;
+  onConfigureDefaults?: (expert: ExpertSummary) => void;
 }
 
 export const ExpertCard = memo(function ExpertCard({
@@ -32,6 +36,8 @@ export const ExpertCard = memo(function ExpertCard({
   lang,
   isInstalled,
   onCreate,
+  canConfigureDefaults = false,
+  onConfigureDefaults,
 }: ExpertCardProps) {
   const { t } = useTranslation();
   const label = pickLocale(expert.label, lang) || expert.id;
@@ -82,6 +88,34 @@ export const ExpertCard = memo(function ExpertCard({
       {/* Footer */}
       <div className={styles.expertCardFooter}>
         <div className={styles.expertCardHint}>
+          {canConfigureDefaults && onConfigureDefaults && (
+            <Tooltip title={t("experts.defaults.entry", "配置默认连接器")}>
+              <button
+                type="button"
+                aria-label={t("experts.defaults.entry", "配置默认连接器")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onConfigureDefaults(expert);
+                }}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 22,
+                  height: 22,
+                  marginRight: 6,
+                  padding: 0,
+                  border: "none",
+                  background: "transparent",
+                  borderRadius: 6,
+                  cursor: "pointer",
+                  color: "var(--fn-text-tertiary)",
+                }}
+              >
+                <Settings2 size={14} />
+              </button>
+            </Tooltip>
+          )}
           {t("experts.createFromTemplate")}
         </div>
         {isInstalled && (

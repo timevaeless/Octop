@@ -105,6 +105,18 @@ export interface LibraryUploadResponse {
   warnings?: string[];
 }
 
+export interface LibraryExpertDefaultsOption {
+  value: string;
+  label: string;
+  kind?: string;
+}
+
+export interface LibraryExpertDefaultsResponse {
+  expert_id: string;
+  default_mcp_servers: string[];
+  options: LibraryExpertDefaultsOption[];
+}
+
 export const expertMarketApi = {
   list: (query: string, scene = "") =>
     request<ExpertHubListResponse>(hubListPath(query, scene)),
@@ -137,4 +149,21 @@ export const expertMarketApi = {
     request<void>(`/experts/library/upload/${encodeURIComponent(expertId)}`, {
       method: "DELETE",
     }),
+
+  /** Admin: read a builtin expert's persisted default MCP connector refs. */
+  getLibraryExpertDefaults: (expertId: string) =>
+    request<LibraryExpertDefaultsResponse>(
+      `/experts/library/${encodeURIComponent(expertId)}/defaults`,
+      { method: "GET" },
+    ),
+
+  /** Admin: persist default MCP connector refs (mount keys are normalized server-side). */
+  putLibraryExpertDefaults: (expertId: string, values: string[]) =>
+    request<LibraryExpertDefaultsResponse>(
+      `/experts/library/${encodeURIComponent(expertId)}/defaults`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ default_mcp_servers: values }),
+      },
+    ),
 };
