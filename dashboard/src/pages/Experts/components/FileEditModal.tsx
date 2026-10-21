@@ -8,7 +8,8 @@ import { request } from "../../../api/request";
 import { useTheme } from "../../../context/ThemeContext";
 import { withFromWorkspace } from "../../../utils/fromWorkspace";
 
-const MonacoEditor = lazy(() => import("@monaco-editor/react"));
+// T4 hook: bundled monaco, no runtime CDN — see components/monacoSetup.ts
+const MonacoEditor = lazy(() => import("@/components/monacoSetup"));
 
 interface FileEditModalProps {
   open: boolean;

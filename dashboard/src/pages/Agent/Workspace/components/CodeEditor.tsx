@@ -17,7 +17,8 @@ import { useTheme } from "../../../../context/ThemeContext";
 import { getEditorLanguage } from "../utils/editorLanguage";
 import styles from "../index.module.less";
 
-const MonacoEditor = lazy(() => import("@monaco-editor/react"));
+// T4 hook: bundled monaco, no runtime CDN — see components/monacoSetup.ts
+const MonacoEditor = lazy(() => import("@/components/monacoSetup"));
 
 interface CodeEditorProps {
   path: string;
