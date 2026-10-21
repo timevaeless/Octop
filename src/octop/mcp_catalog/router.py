@@ -1529,14 +1529,14 @@ def attach_connector(
         higress_base=base,
     )
     # Migrate the legacy self-mount: drop the old container entry so a
-    # re-attach does not leave both shapes mounted.
+    # re-attach does not leave both shapes mounted (T4: from whichever
+    # document owns the key).
     legacy_key = f"mcp-{service_id}"
     try:
-        existing = conn.get_custom_servers(user.id)
-        if legacy_key in existing:
-            conn.put_custom_servers(
-                user.id, {k: v for k, v in existing.items() if k != legacy_key}
-            )
+        from octop.infra.connectors.custom_multi import remove_server
+
+        if legacy_key in conn.get_custom_servers(user.id):
+            remove_server(conn, user.id, legacy_key)
     except Exception:  # noqa: BLE001 — cleanup is best-effort, attach already landed
         logger.exception(
             "legacy catalog mount cleanup failed for %s (user %s)", service_id, user.id

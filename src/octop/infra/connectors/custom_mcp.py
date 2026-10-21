@@ -51,26 +51,6 @@ def parse_synthetic_instance_id(instance_id: str) -> str | None:
     return name if name else None
 
 
-def resolve_acl_connector_parent(repo: Any, instance_id: str, user_id: int) -> Any | None:
-    """Map a synthetic custom-MCP child id to its parent connector row.
-
-    The resource ACL lives on the parent custom-mcp row: ``custom:PARENT:NAME``
-    points at a shared parent directly, plain ``custom:NAME`` is one of the
-    caller's own servers. Anything else is not a synthetic id (``None``), so
-    callers fall back to the plain row lookup.
-    """
-    raw = parse_synthetic_instance_id(instance_id)
-    if raw is None:
-        return None
-    parent_id, separator, _ = raw.partition(":")
-    if separator:
-        parent = repo.get(parent_id)
-        if parent is not None and is_custom_mcp_kind(parent.kind):
-            return parent
-        return None
-    return repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
-
-
 def server_enabled(spec: dict[str, Any]) -> bool:
     return spec.get("enabled", True) is not False
 

@@ -95,14 +95,22 @@ def test_normalize_streamable_http_and_stdio():
     assert stdio["enabled"] is False
 
 
+def _svc(svc: ConnectorService, db: SqlitePool, uid: int, name: str, servers: dict, org_id=None):
+    """Create one multi-doc connector and return its instance_id."""
+    return svc.create_custom_connector(uid, name, servers, org_id=org_id)["instance_id"]
+
+
 def test_shared_custom_server_uses_collision_safe_name_for_viewer(
     svc: ConnectorService,
     db: SqlitePool,
 ) -> None:
     owner_id = _ensure_user(db)
     viewer_id = _ensure_second_user(db)
-    svc.put_custom_servers(
+    _svc(
+        svc,
+        db,
         owner_id,
+        "Conns",
         {
             "linear": {
                 "transport": "streamable_http",
@@ -228,8 +236,11 @@ def test_enabled_harness_configs_filters_disabled():
 
 def test_display_name_normalized_and_used_in_list_api(svc: ConnectorService, db: SqlitePool):
     uid = _ensure_user(db)
-    servers = svc.put_custom_servers(
+    _svc(
+        svc,
+        db,
         uid,
+        "Docs",
         {
             "http-server-1": {
                 "transport": "streamable_http",
@@ -238,7 +249,7 @@ def test_display_name_normalized_and_used_in_list_api(svc: ConnectorService, db:
             },
         },
     )
-    assert servers["http-server-1"]["display_name"] == "我的知识库"
+    assert svc.get_custom_servers(uid)["http-server-1"]["display_name"] == "我的知识库"
     listed = svc.list_instances_for_api(uid)
     assert len(listed) == 1
     assert listed[0]["mcp_server_name"] == "http-server-1"
@@ -255,8 +266,11 @@ def test_list_instances_echoes_org_and_allowed_roles(svc: ConnectorService, db: 
     from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND as KIND
 
     uid = _ensure_user(db)
-    svc.put_custom_servers(
+    iid = _svc(
+        svc,
+        db,
         uid,
+        "Linear",
         {
             "linear": {
                 "transport": "streamable_http",
@@ -265,9 +279,7 @@ def test_list_instances_echoes_org_and_allowed_roles(svc: ConnectorService, db: 
         },
         org_id=ORG,
     )
-    parent = svc._repo.get_by_user_kind(uid, KIND)
-    assert parent is not None
-    svc._repo.update_metadata(parent.instance_id, allowed_roles=["finance_operator"])
+    svc._repo.update_metadata(iid, allowed_roles=["finance_operator"])
 
     listed = svc.list_instances_for_api(uid)
     assert len(listed) == 1
@@ -276,36 +288,40 @@ def test_list_instances_echoes_org_and_allowed_roles(svc: ConnectorService, db: 
     assert row["allowed_roles"] == ["finance_operator"]
 
 
-def test_resolve_acl_connector_parent_maps_synthetic_ids(db: SqlitePool):
-    """``custom:PARENT:NAME`` → shared parent row; ``custom:NAME`` → own row."""
+def test_resolve_acl_parent_maps_synthetic_ids(svc: ConnectorService, db: SqlitePool):
+    """``custom:PARENT:NAME`` → shared parent row; ``custom:NAME`` → owning doc."""
     from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND as KIND
-    from octop.infra.connectors.custom_mcp import resolve_acl_connector_parent
+    from octop.infra.connectors.custom_multi import resolve_acl_parent
 
-    repo = ConnectorRepo(db)
     uid = _ensure_user(db)
-    parent_iid = repo.create(
+    parent_iid = svc._repo.create(
         instance_id=new_ulid(),
         user_id=uid,
         kind=KIND,
-        display_name="custom-mcp",
+        display_name="shared-src",
         mcp_server_name="custom-mcp",
         shared=True,
         org_id=ORG,
     )
-    parent = repo.get(parent_iid)
-    assert parent is not None
+    own_iid = _svc(
+        svc,
+        db,
+        uid,
+        "Own",
+        {"linear": {"transport": "streamable_http", "url": "https://mcp.linear.app/mcp"}},
+    )
 
     # Shared child: parent id embedded in the synthetic id.
-    shared_child = f"custom:{parent.instance_id}:linear"
-    assert resolve_acl_connector_parent(repo, shared_child, uid).instance_id == (parent.instance_id)
-    # Own child: resolves to the caller's custom-mcp row.
-    assert resolve_acl_connector_parent(repo, "custom:linear", uid).instance_id == (
-        parent.instance_id
-    )
+    shared_child = f"custom:{parent_iid}:linear"
+    assert resolve_acl_parent(svc, shared_child, uid).instance_id == parent_iid
+    # Own child: resolves to the document actually holding the server.
+    assert resolve_acl_parent(svc, "custom:linear", uid).instance_id == own_iid
+    # Own child naming a server no document holds → None.
+    assert resolve_acl_parent(svc, "custom:missing", uid) is None
     # Not a synthetic id → None (caller falls back to the plain lookup).
-    assert resolve_acl_connector_parent(repo, parent.instance_id, uid) is None
+    assert resolve_acl_parent(svc, parent_iid, uid) is None
     # Shared child pointing at a non-existent parent → None.
-    assert resolve_acl_connector_parent(repo, "custom:nope:linear", uid) is None
+    assert resolve_acl_parent(svc, "custom:nope:linear", uid) is None
 
 
 def test_harness_spec_stdio_default_args():
@@ -328,10 +344,13 @@ def test_harness_spec_streamable_http_adds_accept():
     assert "enabled" not in spec
 
 
-def test_put_and_expand_custom_mcp(svc: ConnectorService, db: SqlitePool):
+def test_create_and_expand_custom_mcp(svc: ConnectorService, db: SqlitePool):
     uid = _ensure_user(db)
-    servers = svc.put_custom_servers(
+    iid = _svc(
+        svc,
+        db,
         uid,
+        "Conns",
         {
             "deepwiki": {
                 "transport": "streamable_http",
@@ -345,10 +364,8 @@ def test_put_and_expand_custom_mcp(svc: ConnectorService, db: SqlitePool):
             },
         },
     )
-    assert set(servers) == {"deepwiki", "local"}
-    assert extract_servers(
-        svc.decrypt(svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND).instance_id)
-    )  # noqa: SLF001
+    assert set(svc.get_custom_servers(uid)) == {"deepwiki", "local"}
+    assert extract_servers(svc.decrypt(iid))  # noqa: SLF001
 
     listed = svc.list_instances_for_api(uid)
     assert len(listed) == 2
@@ -364,29 +381,28 @@ def test_put_and_expand_custom_mcp(svc: ConnectorService, db: SqlitePool):
     assert set(svc.list_active_mcp_server_names(uid)) == {"deepwiki", "local"}
 
 
-def test_put_empty_servers_deletes_parent_row(svc: ConnectorService, db: SqlitePool):
+def test_save_empty_servers_deletes_that_connector_only(
+    svc: ConnectorService, db: SqlitePool
+):
     uid = _ensure_user(db)
-    svc.put_custom_servers(
-        uid,
-        {
-            "only": {
-                "transport": "stdio",
-                "command": "npx",
-            },
-        },
-    )
-    assert svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND) is not None  # noqa: SLF001
-    assert svc.put_custom_servers(uid, {}) == {}
-    assert svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND) is None  # noqa: SLF001
-    assert svc.list_instances_for_api(uid) == []
+    iid_a = _svc(svc, db, uid, "A", {"a": {"transport": "stdio", "command": "npx"}})
+    iid_b = _svc(svc, db, uid, "B", {"b": {"transport": "stdio", "command": "npx"}})
+    assert svc.save_custom_connector(uid, iid_a, {}) == {}
+    assert svc._repo.get(iid_a) is None  # noqa: SLF001
+    assert set(svc.get_custom_servers(uid)) == {"b"}
+    assert svc._repo.get(iid_b) is not None  # noqa: SLF001
+    assert svc.list_instances_for_api(uid) != []
 
 
 def test_build_mcp_configs_merges_enabled_custom(svc: ConnectorService, db: SqlitePool):
     uid = _ensure_user(db)
     # Built-in-style row that catalog would skip if unknown — use real catalog kind optional.
     # Only custom servers here.
-    svc.put_custom_servers(
+    _svc(
+        svc,
+        db,
         uid,
+        "Conns",
         {
             "a": {
                 "transport": "streamable_http",
@@ -426,8 +442,9 @@ def test_custom_mcp_name_conflicts_with_builtin(svc: ConnectorService, db: Sqlit
         mcp_server_name=name,
     )
     with pytest.raises(ValueError, match="conflicts"):
-        svc.put_custom_servers(
+        svc.create_custom_connector(
             uid,
+            "Clash",
             {
                 name: {
                     "transport": "stdio",
@@ -453,8 +470,11 @@ def test_normalize_preserves_default_open():
 
 def test_default_open_false_by_default_and_listed(svc: ConnectorService, db: SqlitePool):
     uid = _ensure_user(db)
-    svc.put_custom_servers(
+    _svc(
+        svc,
+        db,
         uid,
+        "Conns",
         {
             "always": {
                 "transport": "streamable_http",
@@ -488,8 +508,11 @@ def test_list_default_open_mcp_server_names(svc: ConnectorService, db: SqlitePoo
     blob = encrypt_credentials(svc._secret_repo, {"token": "t", "instance_id": iid})
     svc._repo.upsert_credentials(instance_id=iid, blob=blob)
 
-    svc.put_custom_servers(
+    _svc(
+        svc,
+        db,
         uid,
+        "Conns",
         {
             "always": {
                 "transport": "streamable_http",
@@ -518,15 +541,7 @@ async def test_ensure_fresh_custom_servers_marks_reauth_when_refresh_fails_expir
 
     uid = _ensure_user(db)
     expired_at = int(time.time()) - 60
-    svc.put_custom_servers(
-        uid,
-        {
-            "srv": {
-                "transport": "streamable_http",
-                "url": "https://example.com/mcp",
-            }
-        },
-    )
+    _svc(svc, db, uid, "Conns", {"srv": {"transport": "streamable_http", "url": "https://example.com/mcp"}})
     svc.apply_custom_server_oauth(
         uid,
         "srv",
@@ -540,7 +555,7 @@ async def test_ensure_fresh_custom_servers_marks_reauth_when_refresh_fails_expir
         resource="https://example.com/mcp",
     )
     with patch(
-        "octop.infra.connectors.service.refresh_custom_mcp_oauth",
+        "octop.infra.connectors.oauth.registry.refresh_custom_mcp_oauth",
         new_callable=AsyncMock,
         side_effect=ValueError("refresh failed"),
     ):
@@ -562,15 +577,7 @@ async def test_ensure_fresh_custom_servers_keeps_valid_token_when_refresh_fails(
 
     uid = _ensure_user(db)
     expires_at = int(time.time()) + 60
-    svc.put_custom_servers(
-        uid,
-        {
-            "srv": {
-                "transport": "streamable_http",
-                "url": "https://example.com/mcp",
-            }
-        },
-    )
+    _svc(svc, db, uid, "Conns", {"srv": {"transport": "streamable_http", "url": "https://example.com/mcp"}})
     svc.apply_custom_server_oauth(
         uid,
         "srv",
@@ -584,7 +591,7 @@ async def test_ensure_fresh_custom_servers_keeps_valid_token_when_refresh_fails(
         resource="https://example.com/mcp",
     )
     with patch(
-        "octop.infra.connectors.service.refresh_custom_mcp_oauth",
+        "octop.infra.connectors.oauth.registry.refresh_custom_mcp_oauth",
         new_callable=AsyncMock,
         side_effect=ValueError("refresh failed"),
     ):
@@ -595,14 +602,13 @@ async def test_ensure_fresh_custom_servers_keeps_valid_token_when_refresh_fails(
     assert svc.get_custom_servers(uid)["srv"]["oauth"]["access_token"] == "still-valid"
 
 
-def test_resave_adopts_org_for_orgless_parent_row(
+def test_save_adopts_org_for_orgless_connector(
     svc: ConnectorService, db: SqlitePool
 ) -> None:
-    """A pre-018 parent row carries org_id NULL (2026-09-27: unattributed).
+    """A platform (orgless) connector adopts the tenant on its owner's save.
 
-    The owner re-saving their servers must adopt the tenant (review
-    2026-09-26 P1-4): otherwise the row stays orgless forever and its
-    shared servers stay visible platform-wide.
+    Mirrors the single-document adoption rule: the row must not stay orgless
+    forever, or its shared servers stay visible platform-wide.
     """
     uid = _ensure_user(db)
     servers = {
@@ -611,12 +617,191 @@ def test_resave_adopts_org_for_orgless_parent_row(
             "url": "https://mcp.linear.app/mcp",
         }
     }
-    svc.put_custom_servers(uid, servers, org_id=None)
-    row = svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND)
-    assert row is not None
-    assert row.org_id is None
+    iid = svc.create_custom_connector(uid, "Linear", servers, org_id=None)["instance_id"]
+    assert svc._repo.get(iid).org_id is None  # noqa: SLF001
 
-    svc.put_custom_servers(uid, servers, org_id=ORG)
-    adopted = svc._repo.get_by_user_kind(uid, CUSTOM_MCP_KIND)
-    assert adopted is not None
-    assert adopted.org_id == ORG
+    svc.save_custom_connector(uid, iid, servers, org_id=ORG)
+    assert svc._repo.get(iid).org_id == ORG  # noqa: SLF001
+
+
+def test_save_from_redacted_ui_spec_preserves_stored_oauth(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    """Saving a redacted (UI-shaped) spec must not wipe stored OAuth tokens.
+
+    Mirrors the old ``put_custom_servers`` semantics: client-supplied oauth
+    blobs are dropped, stored tokens are merged back per server name.
+    """
+    import time
+
+    uid = _ensure_user(db)
+    iid = _svc(svc, db, uid, "A", {"srv": {"transport": "streamable_http", "url": "https://a.example/mcp"}})
+    svc.apply_custom_server_oauth(
+        uid,
+        "srv",
+        {
+            "access_token": "tok-1",
+            "refresh_token": "r",
+            "expires_at": int(time.time()) + 600,
+            "oauth_client_id": "cid",
+        },
+        issuer="https://a.example",
+        resource="https://a.example/mcp",
+    )
+    stored = svc.get_custom_servers(uid)["srv"]["oauth"]
+    assert stored.get("access_token") == "tok-1"
+
+    # The dashboard saves what it received from get_custom_servers_for_api —
+    # a redacted spec carrying only the oauth preview.
+    redacted = svc.get_custom_servers_for_api(uid)
+    svc.save_custom_connector(uid, iid, redacted)
+
+    still = svc.get_custom_servers(uid)["srv"]["oauth"]
+    assert still.get("access_token") == "tok-1"
+
+
+# ----------------------------------------------------- multi-doc isolation
+
+
+def test_two_connectors_merged_read_and_write_isolation(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    """Patching a server in connector A must never rewrite connector B."""
+    uid = _ensure_user(db)
+    _svc(
+        svc,
+        db,
+        uid,
+        "A",
+        {
+            "alpha": {"transport": "streamable_http", "url": "https://a.example/mcp"},
+            "beta": {"transport": "stdio", "command": "npx", "enabled": False},
+        },
+    )
+    iid_b = _svc(
+        svc,
+        db,
+        uid,
+        "B",
+        {"gamma": {"transport": "streamable_http", "url": "https://b.example/mcp"}},
+    )
+    before_b = svc.decrypt(iid_b)  # noqa: SLF001
+
+    svc.patch_custom_server(uid, "alpha", enabled=False)
+
+    # Merged read sees both docs; B's document is byte-identical.
+    assert set(svc.get_custom_servers(uid)) == {"alpha", "beta", "gamma"}
+    assert svc.decrypt(iid_b) == before_b  # noqa: SLF001
+    # And the patched server sits in A only.
+    from octop.infra.connectors.custom_multi import locate_connector_for_server
+
+    assert locate_connector_for_server(svc, uid, "alpha").display_name == "A"  # noqa: SLF001
+    assert locate_connector_for_server(svc, uid, "gamma").display_name == "B"  # noqa: SLF001
+
+
+def test_cross_document_server_name_collision_rejected(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    """Server names are user-level (bare-name mount keys) — no cross-doc dup."""
+    uid = _ensure_user(db)
+    _svc(svc, db, uid, "A", {"alpha": {"transport": "stdio", "command": "npx"}})
+    with pytest.raises(ValueError, match="conflicts"):
+        svc.create_custom_connector(
+            uid, "B", {"alpha": {"transport": "stdio", "command": "npx"}}
+        )
+    # Same check on save into an existing second document.
+    iid_b = _svc(svc, db, uid, "B", {"beta": {"transport": "stdio", "command": "npx"}})
+    with pytest.raises(ValueError, match="conflicts"):
+        svc.save_custom_connector(
+            uid, iid_b, {"beta": {"transport": "stdio", "command": "npx"}, "alpha": {"transport": "stdio", "command": "npx"}}
+        )
+
+
+def test_connector_display_name_unique_across_docs(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    from octop.infra.connectors.service import ConnectorNameTakenError
+
+    uid = _ensure_user(db)
+    _svc(svc, db, uid, "Linear", {"alpha": {"transport": "stdio", "command": "npx"}})
+    iid_b = _svc(svc, db, uid, "Other", {"beta": {"transport": "stdio", "command": "npx"}})
+    with pytest.raises(ConnectorNameTakenError):
+        svc.create_custom_connector(uid, "Linear", {})
+    with pytest.raises(ConnectorNameTakenError):
+        svc.rename_custom_connector(uid, iid_b, "Linear")
+    # Non-custom rows count too.
+    iid = new_ulid()
+    svc._repo.create(  # noqa: SLF001
+        instance_id=iid,
+        user_id=uid,
+        kind="tencent-docs",
+        display_name="Docs",
+        mcp_server_name=mcp_server_name("tencent-docs", iid),
+    )
+    with pytest.raises(ConnectorNameTakenError):
+        svc.create_custom_connector(uid, "Docs", {})
+
+
+def test_delete_connector_removes_only_its_servers(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    uid = _ensure_user(db)
+    iid_a = _svc(svc, db, uid, "A", {"alpha": {"transport": "stdio", "command": "npx"}})
+    _svc(svc, db, uid, "B", {"beta": {"transport": "stdio", "command": "npx"}})
+
+    removed = svc.delete_custom_connector(uid, iid_a)
+    assert set(removed) == {"alpha"}
+    assert set(svc.get_custom_servers(uid)) == {"beta"}
+    assert svc.list_active_mcp_server_names(uid) == ["beta"]
+
+
+def test_expand_own_lists_all_connectors(svc: ConnectorService, db: SqlitePool) -> None:
+    uid = _ensure_user(db)
+    _svc(svc, db, uid, "A", {"alpha": {"transport": "stdio", "command": "npx"}})
+    _svc(svc, db, uid, "B", {"beta": {"transport": "streamable_http", "url": "https://b.example/mcp"}})
+    listed = svc.list_instances_for_api(uid)
+    assert {row["mcp_server_name"] for row in listed} == {"alpha", "beta"}
+
+
+@pytest.mark.asyncio
+async def test_oauth_refresh_only_rewrites_owning_document(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    """Expired OAuth in A marks A; B's document stays byte-identical."""
+    import time
+    from unittest.mock import AsyncMock, patch
+
+    uid = _ensure_user(db)
+    expired_at = int(time.time()) - 60
+    _svc(svc, db, uid, "A", {"stale": {"transport": "streamable_http", "url": "https://a.example/mcp"}})
+    iid_b = _svc(svc, db, uid, "B", {"fresh": {"transport": "streamable_http", "url": "https://b.example/mcp"}})
+    before_b = svc.decrypt(iid_b)  # noqa: SLF001
+    svc.apply_custom_server_oauth(
+        uid,
+        "stale",
+        {
+            "access_token": "old",
+            "refresh_token": "refresh-me",
+            "expires_at": expired_at,
+            "oauth_client_id": "cid",
+        },
+        issuer="https://a.example",
+        resource="https://a.example/mcp",
+    )
+    with patch(
+        "octop.infra.connectors.oauth.registry.refresh_custom_mcp_oauth",
+        new_callable=AsyncMock,
+        side_effect=ValueError("refresh failed"),
+    ):
+        await svc.ensure_fresh_custom_servers(uid)
+
+    assert svc.get_custom_servers(uid)["stale"]["oauth"] == {"required": True}
+    assert svc.decrypt(iid_b) == before_b  # noqa: SLF001
+
+
+def test_create_rejects_empty_servers(svc: ConnectorService, db: SqlitePool) -> None:
+    """Empty create must 400 cleanly — no stub row, no crash."""
+    uid = _ensure_user(db)
+    with pytest.raises(ValueError, match="at least one server"):
+        svc.create_custom_connector(uid, "Empty", {})
+    assert svc._repo.list_by_user_kind(uid, CUSTOM_MCP_KIND) == []  # noqa: SLF001

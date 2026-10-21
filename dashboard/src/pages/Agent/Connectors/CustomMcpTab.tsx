@@ -1,20 +1,29 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Button, Checkbox, Input, Segmented, Spin } from "antd";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Button,
+  Checkbox,
+  Input,
+  Popconfirm,
+  Segmented,
+  Spin,
+  Table,
+  type TableProps,
+} from "antd";
 import { message } from "@/utils/antdMessage";
 
-import { Globe, Plus, Terminal } from "lucide-react";
+import { ArrowLeft, Globe, Plus, Terminal, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import {
   connectorsApi,
   type ConnectorProbeResult,
+  type CustomMcpConnector,
   type CustomMcpServers,
   type CustomMcpTransport,
 } from "../../../api/modules/connectors";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { CustomMcpServerCard } from "./CustomMcpServerCard";
 import {
-  EXAMPLE_JSON,
   PROBE_ON_SAVE_KEY,
   cardsToServers,
   hasHttpProbeTargets,
@@ -59,16 +68,44 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
   const [persistedNames, setPersistedNames] = useState<Set<string>>(
     () => new Set(),
   );
+  // T4 multi-doc: one connector = one document; the editor below edits the
+  // ACTIVE connector only. `activeId === null` means a fresh draft.
+  const [connectors, setConnectors] = useState<CustomMcpConnector[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [connName, setConnName] = useState("");
+  // Two-level navigation: "list" = paginated connector table,
+  // "detail" = the per-connector editor below.
+  const [view, setView] = useState<"list" | "detail">("list");
+  const pendingFocusRef = useRef<string | null>(null);
+  // Mirror of activeId for async callbacks (OAuth finish runs long after the
+  // click that captured the render-time value — a draft's real id must be
+  // visible there).
+  const activeIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
 
   useEffect(() => {
     localStorage.setItem(PROBE_ON_SAVE_KEY, probeOnSave ? "1" : "0");
   }, [probeOnSave]);
 
+  const activeDoc = useMemo(
+    () => connectors.find((c) => c.instance_id === activeId) ?? null,
+    [connectors, activeId],
+  );
+
   const applySavedServers = (
     servers: CustomMcpServers,
     prevCards: ServerCardState[],
   ) => {
-    const nextCards = mergeCustomMcpCards(servers, prevCards);
+    let nextCards = mergeCustomMcpCards(servers, prevCards);
+    const focus = pendingFocusRef.current;
+    if (focus) {
+      pendingFocusRef.current = null;
+      nextCards = nextCards.map((card) =>
+        card.name.trim() === focus ? { ...card, collapsed: false } : card,
+      );
+    }
     setCards(nextCards);
     setPersistedNames(new Set(Object.keys(servers)));
     setJsonText(JSON.stringify(servers, null, 2));
@@ -76,11 +113,20 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     return nextCards;
   };
 
+  const refreshConnectors = useCallback(async () => {
+    const { connectors: list } = await connectorsApi.listCustomMcpConnectors();
+    setConnectors(list);
+    return list;
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const { servers } = await connectorsApi.getCustomMcp();
-      applySavedServers(servers, []);
+      const list = await refreshConnectors();
+      setActiveId((prev) => {
+        if (prev && list.some((c) => c.instance_id === prev)) return prev;
+        return list[0]?.instance_id ?? null;
+      });
       setProbeResults({});
       setJsonError(null);
     } catch (e) {
@@ -95,15 +141,51 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [t, refreshConnectors]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
+  // Apply the active connector's document whenever the selection changes
+  // (or after the initial load). Saving/patching refreshes the document
+  // explicitly instead of riding on this effect, so in-progress edits are
+  // never clobbered by a background list refresh.
   useEffect(() => {
-    if (!focusServerName || loading) return;
+    if (loading) return;
+    setConnName(activeDoc?.name ?? "");
+    applySavedServers(activeDoc?.servers ?? {}, []);
+    setJsonError(null);
+    setProbeResults({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, loading]);
+
+  const lastFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (loading) return;
+    if (!focusServerName) {
+      // Parent clears the focus (e.g. re-clicking the tab) — re-arm so the
+      // same server can be focused again later.
+      lastFocusRef.current = null;
+      return;
+    }
+    // Consume-once: the parent keeps this prop set after the initial jump,
+    // and every list refresh would otherwise re-run this effect and drag the
+    // user back into the detail view from the list.
+    if (lastFocusRef.current === focusServerName) return;
+    lastFocusRef.current = focusServerName;
+    setView("detail");
     setMode("visual");
+    // If the focused server lives in another connector, switch to it —
+    // the expansion lands via pendingFocusRef once that document applies.
+    pendingFocusRef.current = focusServerName;
+    const doc = connectors.find((c) =>
+      Object.keys(c.servers).includes(focusServerName),
+    );
+    if (doc && doc.instance_id !== activeId) {
+      setActiveId(doc.instance_id);
+      return;
+    }
     setCards((prev) =>
       prev.map((card) =>
         card.name.trim() === focusServerName
@@ -111,7 +193,7 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
           : card,
       ),
     );
-  }, [focusServerName, loading]);
+  }, [focusServerName, loading, connectors, activeId]);
 
   const persistServerPatch = async (
     card: ServerCardState,
@@ -131,11 +213,10 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
       return;
     }
     try {
-      const { servers } = await connectorsApi.patchCustomMcpServer(
-        name,
-        apiPatch,
-      );
-      applySavedServers(servers, optimisticCards);
+      await connectorsApi.patchCustomMcpServer(name, apiPatch);
+      const list = await refreshConnectors();
+      const doc = list.find((c) => c.instance_id === activeId);
+      applySavedServers(doc?.servers ?? {}, optimisticCards);
       notifyConnectorsChanged();
     } catch (e) {
       console.error(e);
@@ -245,11 +326,15 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
 
     try {
       await connectorsApi.deleteInstance(`custom:${serverName}`);
-      setPersistedNames((prev) => {
-        const next = new Set(prev);
-        next.delete(serverName);
-        return next;
-      });
+      const list = await refreshConnectors();
+      setConnectors(list);
+      const doc = list.find((c) => c.instance_id === activeId);
+      if (!doc) {
+        // The last server of this connector was just removed — the row is
+        // gone; fall back to the list head instead of a stale selection.
+        setActiveId(list[0]?.instance_id ?? null);
+      }
+      applySavedServers(doc?.servers ?? {}, nextCards);
       notifyConnectorsChanged();
       message.success(t("connectors.deleteSuccess", "已删除"));
     } catch (e) {
@@ -400,19 +485,56 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     }
   };
 
-  const handleSave = async () => {
+  /** Persist the ACTIVE connector (create on draft, rename+save otherwise). */
+  const persistActiveConnector = async (): Promise<CustomMcpConnector | null> => {
     const servers = resolveServersForSave();
-    if (!servers) return;
-    setSaving(true);
-    try {
-      const saved = await connectorsApi.putCustomMcp(servers);
-      const nextCards = applySavedServers(saved.servers, cards);
+    if (!servers) return null;
+    const name = connName.trim();
+    if (!name) {
+      message.warning(
+        t("connectors.customMcp.nameRequired", "请填写连接器名称"),
+      );
+      return null;
+    }
+    if (!activeId) {
+      const view = await connectorsApi.createCustomMcpConnector({
+        name,
+        servers,
+      });
+      const list = await refreshConnectors();
+      setActiveId(view.instance_id);
+      setConnectors(list);
+      applySavedServers(view.servers, cards);
       notifyConnectorsChanged();
       message.success(
-        t("connectors.customMcp.saveSuccess", "自定义 MCP 已保存"),
+        t("connectors.customMcp.createSuccess", "连接器已创建"),
       );
-      if (probeOnSave && showProbeSection) {
-        for (const card of nextCards) {
+      return view;
+    }
+    if (name !== activeDoc?.name) {
+      await connectorsApi.renameCustomMcpConnector(activeId, name);
+    }
+    const view = await connectorsApi.saveCustomMcpConnector(activeId, servers);
+    const list = await refreshConnectors();
+    if (!list.some((c) => c.instance_id === activeId)) {
+      // Saving an EMPTY document deletes the connector server-side (legacy
+      // semantics) — drop the stale selection instead of editing a ghost.
+      setActiveId(list[0]?.instance_id ?? null);
+    }
+    applySavedServers(view?.servers ?? {}, cards);
+    notifyConnectorsChanged();
+    message.success(
+      t("connectors.customMcp.saveSuccess", "自定义 MCP 已保存"),
+    );
+    return view;
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const view = await persistActiveConnector();
+      if (view && probeOnSave && showProbeSection) {
+        for (const card of cards) {
           if (card.transport !== "streamable_http" || !card.url.trim()) {
             continue;
           }
@@ -427,6 +549,48 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleCreateDraft = () => {
+    setActiveId(null);
+    setConnName("");
+    applySavedServers({}, []);
+    setProbeResults({});
+    setMode("visual");
+    setView("detail");
+  };
+
+  const handleDeleteConnector = async (instanceId?: string) => {
+    const target = instanceId ?? activeId;
+    if (!target) return;
+    try {
+      await connectorsApi.deleteCustomMcpConnector(target);
+      const list = await refreshConnectors();
+      setActiveId((prev) =>
+        prev && list.some((c) => c.instance_id === prev)
+          ? prev
+          : list[0]?.instance_id ?? null,
+      );
+      setView("list");
+      notifyConnectorsChanged();
+      message.success(t("connectors.deleteSuccess", "已删除"));
+    } catch (e) {
+      console.error(e);
+      message.error(
+        apiErrorMessage(e, t("connectors.deleteFailed", "删除失败"), t),
+      );
+      await load();
+    }
+  };
+
+  const openConnector = (instanceId: string) => {
+    setActiveId(instanceId);
+    setView("detail");
+  };
+
+  const formatUpdatedAt = (ts: number) => {
+    if (!ts) return "—";
+    return new Date(ts < 1e12 ? ts * 1000 : ts).toLocaleString();
   };
 
   const handleProbe = async (card: ServerCardState) => {
@@ -481,8 +645,9 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
       }
       setAuthorizingKey(null);
       try {
-        const { servers } = await connectorsApi.getCustomMcp();
-        const nextCards = applySavedServers(servers, cards);
+        const list = await refreshConnectors();
+        const doc = list.find((c) => c.instance_id === activeIdRef.current);
+        const nextCards = applySavedServers(doc?.servers ?? {}, cards);
         const refreshed = nextCards.find((c) => c.name.trim() === serverName);
         if (refreshed) {
           await runProbe(refreshed, { byName: true });
@@ -521,8 +686,8 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     };
 
     try {
-      const servers = resolveServersForSave();
-      if (!servers) {
+      const view = await persistActiveConnector();
+      if (!view) {
         try {
           popup?.close();
         } catch {
@@ -531,9 +696,6 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
         setAuthorizingKey(null);
         return;
       }
-      const saved = await connectorsApi.putCustomMcp(servers);
-      applySavedServers(saved.servers, cards);
-      notifyConnectorsChanged();
 
       const { authorize_url, state_id } = await connectorsApi.oauthStart(
         { type: "custom_mcp", server_name: serverName },
@@ -603,6 +765,117 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     );
   }
 
+  if (view === "list") {
+    const columns: TableProps<CustomMcpConnector>["columns"] = [
+      {
+        title: t("connectors.customMcp.colName", "名称"),
+        dataIndex: "name",
+        render: (name: string) => (
+          <span className={styles.customMcpNameCell}>{name}</span>
+        ),
+      },
+      {
+        title: t("connectors.customMcp.colServers", "服务器数"),
+        width: 100,
+        render: (_, record) => Object.keys(record.servers ?? {}).length,
+      },
+      {
+        title: t("connectors.customMcp.colRoles", "可见角色"),
+        render: (_, record) => {
+          // Server pairs raw keys with display names (same source as the
+          // resource-ACL page); labels fall back to keys position-aligned.
+          const shown =
+            record.allowed_role_labels && record.allowed_role_labels.length > 0
+              ? record.allowed_role_labels
+              : record.allowed_roles;
+          return shown.length > 0
+            ? shown.join(", ")
+            : t("connectors.customMcp.allRoles", "全部角色");
+        },
+      },
+      {
+        title: t("connectors.customMcp.colUpdated", "更新时间"),
+        width: 190,
+        render: (_, record) => formatUpdatedAt(record.updated_at),
+      },
+      {
+        title: t("connectors.customMcp.colActions", "操作"),
+        width: 150,
+        render: (_, record) => (
+          <div
+            className={styles.customMcpRowActions}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Button
+              type="link"
+              size="small"
+              onClick={() => openConnector(record.instance_id)}
+            >
+              {t("connectors.customMcp.editConnector", "编辑")}
+            </Button>
+            <Popconfirm
+              title={t(
+                "connectors.customMcp.deleteConnectorConfirm",
+                "删除该连接器及其全部服务器？",
+              )}
+              onConfirm={() => void handleDeleteConnector(record.instance_id)}
+            >
+              <Button type="link" size="small" danger>
+                {t("connectors.customMcp.deleteRow", "删除")}
+              </Button>
+            </Popconfirm>
+          </div>
+        ),
+      },
+    ];
+    return (
+      <div className={styles.customMcpTab}>
+        <div className={styles.customMcpListCard}>
+          <div className={styles.customMcpListToolbar}>
+            <div>
+              <div className={styles.customMcpListHeading}>
+                {t("connectors.customMcp.listHeading", "自定义连接器")}
+              </div>
+              <p className={styles.customMcpListHint}>
+                {t(
+                  "connectors.customMcp.listHint",
+                  "每个连接器是一组自定义 MCP 服务，点击进入编辑；连接器较多时在此分页浏览。",
+                )}
+              </p>
+            </div>
+            <Button
+              type="primary"
+              icon={<Plus size={14} />}
+              onClick={handleCreateDraft}
+            >
+              {t("connectors.customMcp.newConnector", "新建连接器")}
+            </Button>
+          </div>
+          <Table<CustomMcpConnector>
+            rowKey="instance_id"
+            dataSource={connectors}
+            columns={columns}
+            pagination={{
+              pageSize: 10,
+              hideOnSinglePage: true,
+              showSizeChanger: false,
+            }}
+            onRow={(record) => ({
+              onClick: () => openConnector(record.instance_id),
+              style: { cursor: "pointer" },
+            })}
+            locale={{
+              emptyText: t(
+                "connectors.customMcp.listEmpty",
+                "还没有自定义连接器，点击右上角「新建连接器」创建。",
+              ),
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   const saveFooter = (
     <div
       className={`${styles.customMcpFooter}${
@@ -638,31 +911,68 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
 
   return (
     <div className={styles.customMcpTab}>
-      <div className={styles.customMcpIntro}>
-        <div className={styles.customMcpIntroTitle}>
-          {t(
-            "connectors.customMcp.introTitle",
-            "MCP 服务器配置（JSON 格式）。参考以下格式：",
-          )}
+      <div className={styles.customMcpHeader}>
+        <div className={styles.customMcpHeaderRow}>
+          <Button
+            type="text"
+            className={styles.customMcpBackBtn}
+            icon={<ArrowLeft size={14} />}
+            onClick={() => setView("list")}
+          >
+            {t("connectors.customMcp.backToList", "返回列表")}
+          </Button>
+          <div className={styles.customMcpHeaderSpacer} />
+          {activeId ? (
+            <Popconfirm
+              title={t(
+                "connectors.customMcp.deleteConnectorConfirm",
+                "删除该连接器及其全部服务器？",
+              )}
+              onConfirm={() => void handleDeleteConnector()}
+            >
+              <Button danger type="text" icon={<Trash2 size={14} />}>
+                {t("connectors.customMcp.deleteConnector", "删除连接器")}
+              </Button>
+            </Popconfirm>
+          ) : null}
         </div>
-        <pre className={styles.customMcpExample}>{EXAMPLE_JSON}</pre>
-      </div>
-
-      <div className={styles.customMcpToolbar}>
-        <Segmented
-          value={mode}
-          onChange={(value) => handleModeChange(value as EditorMode)}
-          options={[
-            {
-              value: "visual",
-              label: t("connectors.customMcp.modeVisual", "可视化"),
-            },
-            {
-              value: "json",
-              label: t("connectors.customMcp.modeJson", "</> JSON"),
-            },
-          ]}
-        />
+        <div className={styles.customMcpHeaderRow}>
+          <span className={styles.customMcpFieldLabel}>
+            {t("connectors.customMcp.connectorName", "连接器名称")}
+          </span>
+          <Input
+            className={styles.customMcpNameInput}
+            value={connName}
+            onChange={(e) => setConnName(e.target.value)}
+            placeholder={t(
+              "connectors.customMcp.namePlaceholder",
+              "显示在资源授权页的名称",
+            )}
+          />
+          <div className={styles.customMcpHeaderSpacer} />
+          <Segmented
+            value={mode}
+            onChange={(value) => handleModeChange(value as EditorMode)}
+            options={[
+              {
+                value: "visual",
+                label: t("connectors.customMcp.modeVisual", "可视化"),
+              },
+              {
+                value: "json",
+                label: t("connectors.customMcp.modeJson", "</> JSON"),
+              },
+            ]}
+          />
+        </div>
+        {!activeId ? (
+          <div className={styles.customMcpDraftHint}>
+            {t(
+              "connectors.customMcp.draftHint",
+              "正在新建连接器：填写名称并添加服务器后点「保存」完成创建。",
+            )}
+          </div>
+        ) : null}
       </div>
 
       {mode === "json" ? (

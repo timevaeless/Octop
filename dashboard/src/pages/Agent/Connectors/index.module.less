@@ -718,6 +718,104 @@
   justify-content: flex-start;
 }
 
+/* T4 multi-doc: the connector layer sits in its own card so it reads as a
+   distinct level above the per-connector server editor. */
+.customMcpHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-lg);
+  background: var(--fn-surface-sunken, var(--fn-bg-secondary));
+}
+
+.customMcpHeaderRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.customMcpFieldLabel {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fn-text-secondary);
+  white-space: nowrap;
+}
+
+.customMcpConnectorSelect {
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+
+.customMcpNameInput {
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+
+.customMcpHeaderSpacer {
+  flex: 1 1 auto;
+}
+
+.customMcpDraftHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px dashed color-mix(in srgb, var(--fn-color-brand) 40%, transparent);
+  border-radius: var(--fn-radius-md);
+  background: color-mix(in srgb, var(--fn-color-brand) 5%, transparent);
+  font-size: 13px;
+  color: var(--fn-text-secondary);
+}
+
+/* List view: paginated connector table card (level 1 of list -> detail). */
+.customMcpListCard {
+  padding: 16px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-lg);
+  background: var(--fn-bg-primary);
+}
+
+.customMcpListToolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.customMcpListHeading {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.customMcpListHint {
+  margin: 4px 0 0;
+  font-size: 12.5px;
+  color: var(--fn-text-secondary);
+}
+
+.customMcpNameCell {
+  font-weight: 500;
+  color: var(--fn-text-primary);
+}
+
+.customMcpRowActions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.customMcpBackBtn {
+  flex: none;
+  padding-left: 6px;
+  padding-right: 10px;
+}
+
 .customMcpPanel {
   display: flex;
   flex-direction: column;

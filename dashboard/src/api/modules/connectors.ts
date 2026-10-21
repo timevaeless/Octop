@@ -155,6 +155,19 @@ export type OAuthStartTarget =
 
 export type CustomMcpServers = Record<string, CustomMcpServerSpec>;
 
+export interface CustomMcpConnector {
+  instance_id: string;
+  name: string;
+  servers: CustomMcpServers;
+  org_id: string | null;
+  allowed_roles: string[];
+  /** Display names parallel to allowed_roles (raw key fallback); list-page only. */
+  allowed_role_labels?: string[];
+  created_at: number;
+  updated_at: number;
+}
+
+
 export interface ConnectorCliInstallResult {
   ok: boolean;
   already_installed?: boolean;
@@ -405,11 +418,44 @@ export const connectorsApi = {
   getCustomMcp: () =>
     request<{ servers: CustomMcpServers }>("/connectors/custom-mcp"),
 
-  putCustomMcp: (servers: CustomMcpServers) =>
-    request<{ servers: CustomMcpServers }>("/connectors/custom-mcp", {
-      method: "PUT",
-      body: JSON.stringify({ servers }),
+  // T4 multi-doc: one connector = one document with its own servers.
+  listCustomMcpConnectors: () =>
+    request<{ connectors: CustomMcpConnector[] }>(
+      "/connectors/custom-mcp/connectors",
+    ),
+
+  createCustomMcpConnector: (body: {
+    name: string;
+    servers: CustomMcpServers;
+  }) =>
+    request<CustomMcpConnector>("/connectors/custom-mcp/connectors", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
+
+  saveCustomMcpConnector: (instanceId: string, servers: CustomMcpServers) =>
+    request<CustomMcpConnector>(
+      `/connectors/custom-mcp/connectors/${encodeURIComponent(instanceId)}`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ servers }),
+      },
+    ),
+
+  renameCustomMcpConnector: (instanceId: string, name: string) =>
+    request<CustomMcpConnector>(
+      `/connectors/custom-mcp/connectors/${encodeURIComponent(instanceId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      },
+    ),
+
+  deleteCustomMcpConnector: (instanceId: string) =>
+    request<{ servers: CustomMcpServers }>(
+      `/connectors/custom-mcp/connectors/${encodeURIComponent(instanceId)}`,
+      { method: "DELETE" },
+    ),
 
   patchCustomMcpServer: (
     name: string,

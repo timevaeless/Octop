@@ -161,6 +161,15 @@ class CustomMcpPutBody(BaseModel):
     servers: dict[str, Any] = Field(default_factory=dict)
 
 
+class CustomConnectorCreateBody(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    servers: dict[str, Any] = Field(default_factory=dict)
+
+
+class CustomConnectorRenameBody(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
 class CustomMcpServerPatchBody(BaseModel):
     enabled: bool | None = None
     default_open: bool | None = None
@@ -645,22 +654,76 @@ async def get_custom_mcp(
     return {"servers": servers}
 
 
-@router.put("/connectors/custom-mcp", summary="Save custom MCP servers")
-async def put_custom_mcp(
-    body: CustomMcpPutBody,
+@router.get(
+    "/connectors/custom-mcp/connectors",
+    summary="List the user's custom MCP connectors",
+)
+async def list_custom_connectors(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Replace the user's custom MCP servers document and reload agents."""
+    """One entry per connector — each with its OWN servers (T4 multi-doc)."""
     svc = _connector_service(server)
-    # 2026-09-27 attribution hook (pluggable: resource_attribution).
+    views = svc.list_custom_connectors(user.id)
+    _attach_role_labels(server, views)
+    return {"connectors": views}
+
+
+def _attach_role_labels(server: Any, views: list[dict[str, Any]]) -> None:
+    """Add ``allowed_role_labels`` (display names) beside the raw keys.
+
+    The connectors list page shows who can see each connector; raw storage
+    keys like ``t_{org}_developer`` are meaningless there. Names live in the
+    ``roles`` table (``name_zh``) — same source the resource-ACL page renders.
+    A key whose role row vanished (deleted package) falls back to the raw key
+    instead of dropping the entry, so the projection stays position-aligned
+    with ``allowed_roles``.
+    """
+    keys: list[str] = []
+    for view in views:
+        for key in view.get("allowed_roles") or []:
+            if key not in keys:
+                keys.append(key)
+    if not keys:
+        return
+    labels: dict[str, str] = {}
+    org_repo = getattr(server.services, "org_repo", None)
+    if org_repo is not None:
+        for key in keys:
+            try:
+                row = org_repo.get_role(key)
+            except Exception:
+                row = None
+            if row is not None and getattr(row, "name_zh", ""):
+                labels[key] = row.name_zh
+    for view in views:
+        view["allowed_role_labels"] = [
+            labels.get(key, key) for key in view.get("allowed_roles") or []
+        ]
+
+
+@router.post(
+    "/connectors/custom-mcp/connectors",
+    summary="Create a custom MCP connector",
+    status_code=201,
+)
+async def create_custom_connector(
+    body: CustomConnectorCreateBody,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Mint a new connector document with its own name and servers."""
+    svc = _connector_service(server)
     from octop.infra.users.resource_attribution import (
         creator_org_id_checked as _creator_org_id_checked,
     )
 
     try:
-        servers = svc.put_custom_servers(
-            user.id, body.servers, org_id=_creator_org_id_checked(user)
+        view = svc.create_custom_connector(
+            user.id,
+            body.name,
+            body.servers,
+            org_id=_creator_org_id_checked(user),
         )
     except ConnectorNameTakenError as exc:
         _raise_name_taken(str(exc))
@@ -668,19 +731,131 @@ async def put_custom_mcp(
         raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
     server.services.audit_repo.write(
         actor=user.username,
-        action="connector.custom_mcp.save",
-        target=CUSTOM_MCP_KIND,
-        payload=str(len(servers)),
+        action="connector.custom_mcp.create",
+        target=view["instance_id"],
+        payload=f"name={body.name} servers={len(body.servers)}",
         org_id=user.org_id or None,
     )
     _schedule_connector_reload(
         server,
         user.id,
         all_users=any(
-            isinstance(spec, dict) and spec.get("shared") is True for spec in servers.values()
+            isinstance(spec, dict) and spec.get("shared") is True
+            for spec in body.servers.values()
         ),
     )
-    return {"servers": redact_servers_for_api(servers)}
+    return view
+
+
+@router.put(
+    "/connectors/custom-mcp/connectors/{instance_id}",
+    summary="Replace one custom MCP connector's servers",
+)
+async def save_custom_connector(
+    instance_id: str,
+    body: CustomMcpPutBody,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Write THIS connector's document; sibling connectors stay untouched."""
+    svc = _connector_service(server)
+    from octop.infra.users.resource_attribution import (
+        creator_org_id_checked as _creator_org_id_checked,
+    )
+
+    try:
+        view = svc.save_custom_connector(
+            user.id, instance_id, body.servers, org_id=_creator_org_id_checked(user)
+        )
+    except KeyError as exc:
+        raise OctopError(
+            ErrorCode.CONNECTOR_NOT_FOUND, f"custom MCP connector {instance_id!r} not found"
+        ) from exc
+    except ConnectorNameTakenError as exc:
+        _raise_name_taken(str(exc))
+    except ValueError as exc:
+        raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="connector.custom_mcp.save",
+        target=instance_id,
+        payload=str(len(body.servers)),
+        org_id=user.org_id or None,
+    )
+    _schedule_connector_reload(
+        server,
+        user.id,
+        all_users=any(
+            isinstance(spec, dict) and spec.get("shared") is True
+            for spec in body.servers.values()
+        ),
+    )
+    return view
+
+
+@router.patch(
+    "/connectors/custom-mcp/connectors/{instance_id}",
+    summary="Rename a custom MCP connector",
+)
+async def rename_custom_connector(
+    instance_id: str,
+    body: CustomConnectorRenameBody,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    svc = _connector_service(server)
+    try:
+        view = svc.rename_custom_connector(user.id, instance_id, body.name)
+    except KeyError as exc:
+        raise OctopError(
+            ErrorCode.CONNECTOR_NOT_FOUND, f"custom MCP connector {instance_id!r} not found"
+        ) from exc
+    except ConnectorNameTakenError as exc:
+        _raise_name_taken(str(exc))
+    except ValueError as exc:
+        raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="connector.custom_mcp.rename",
+        target=instance_id,
+        payload=f"name={body.name}",
+        org_id=user.org_id or None,
+    )
+    return view
+
+
+@router.delete(
+    "/connectors/custom-mcp/connectors/{instance_id}",
+    summary="Delete a custom MCP connector",
+)
+async def delete_custom_connector(
+    instance_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    svc = _connector_service(server)
+    try:
+        removed = svc.delete_custom_connector(user.id, instance_id)
+    except KeyError as exc:
+        raise OctopError(
+            ErrorCode.CONNECTOR_NOT_FOUND, f"custom MCP connector {instance_id!r} not found"
+        ) from exc
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="connector.custom_mcp.delete",
+        target=instance_id,
+        payload=str(len(removed)),
+        org_id=user.org_id or None,
+    )
+    _schedule_connector_reload(
+        server,
+        user.id,
+        # Deleting a connector that shared servers affects other users too.
+        all_users=any(
+            isinstance(spec, dict) and spec.get("shared") is True for spec in removed.values()
+        ),
+    )
+    return {"servers": redact_servers_for_api(svc.get_custom_servers(user.id))}
 
 
 @router.patch(
@@ -1015,12 +1190,13 @@ async def delete_instance(
     if custom_target is not None:
         custom_user_id, synthetic_name = custom_target
         svc = _connector_service(server)
-        servers = dict(svc.get_custom_servers(custom_user_id))
-        if synthetic_name not in servers:
-            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
-        del servers[synthetic_name]
+        # T4 multi-doc: drop the server from its OWN document only.
+        from octop.infra.connectors.custom_multi import remove_server
+
         try:
-            svc.put_custom_servers(custom_user_id, servers)
+            remove_server(svc, custom_user_id, synthetic_name)
+        except KeyError as exc:
+            raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found") from exc
         except ValueError as exc:
             raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
         server.services.audit_repo.write(

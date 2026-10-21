@@ -2605,8 +2605,9 @@ def test_attach_connector_per_service_row_carries_attribution(
             "VALUES (7, 'admin7', 'x', 'admin', 1)"
         )
     # 旧形态遗留：容器行里躺着 reshape 前一键接入写入的条目（另有手工连接器）
-    conn_svc.put_custom_servers(
+    conn_svc.create_custom_connector(
         7,
+        "旧形态",
         {
             "mcp-summer-cmc": {
                 "transport": "streamable_http",

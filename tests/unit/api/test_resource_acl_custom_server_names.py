@@ -1,11 +1,9 @@
-"""Tenant resource-ACL listing — custom-MCP rows must carry their server names.
+"""Tenant resource-ACL listing — custom-MCP rows carry their own server names.
 
-Every manual custom-MCP connector is the owner's whole *document*, stored with
-the same `display_name` 「自定义 MCP」, so the name column alone cannot say
-which connector a row is (2026-10-18: two documents were indistinguishable on
-the tenant «资源授权范围» page). The listing projects the server keys inside
-the document; nothing else about the specs (urls, headers, credentials) may
-leave the backend.
+One connector = one document = one resource-ACL row (T4 multi-doc): the row's
+``display_name`` is the user-chosen connector name and the listing projects
+the server keys inside THAT document. Nothing else about the specs (urls,
+headers, credentials) may leave the backend.
 """
 
 from __future__ import annotations
@@ -18,6 +16,9 @@ import pytest
 from octop.api.routers.org_admin import list_tenant_resource_acl
 
 ORG = "cheryfs"
+
+_DOC_A = "01M52GPZ7BYF6Z6B0J638SJ5C0"
+_DOC_B = "01M52GPZ7BYF6Z6B0J638SJ5C99"
 
 
 class _FakeCursor:
@@ -48,13 +49,17 @@ class _FakeDb:
         return _FakeCursor(self._rows, self.statements)
 
 
-def _server(rows: list[dict[str, Any]]) -> SimpleNamespace:
+def _server(
+    rows: list[dict[str, Any]],
+    connector_repo: Any | None = None,
+) -> SimpleNamespace:
     services = SimpleNamespace(
         org_repo=SimpleNamespace(get_org=lambda _org: object()),
         db=_FakeDb(rows),
-        # Only *stored* by ConnectorService.__init__ — the decrypting method is
-        # monkeypatched in each test.
-        connector_repo=object(),
+        # Only *stored* by ConnectorService.__init__ — decrypt is
+        # monkeypatched in each test; connector_repo is a stub exposing
+        # ``get`` (the per-document label projection reads the row first).
+        connector_repo=connector_repo if connector_repo is not None else object(),
         secret_repo=object(),
         settings_repo=object(),
         config=object(),
@@ -78,22 +83,64 @@ def _row(
     }
 
 
+def _patch_docs(
+    monkeypatch: pytest.MonkeyPatch, docs: dict[str, Any]
+) -> Any:
+    """``decrypt(instance_id)`` → the per-document payload (or raise).
+
+    Also returns a connector-repo stub whose ``get`` yields lightweight rows
+    for the known documents.
+    """
+
+    def decrypt(_self: Any, instance_id: str) -> dict[str, Any]:
+        payload = docs[instance_id]
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
+
+    def repo_get(*args: Any) -> Any:
+        instance_id = args[-1]
+        if instance_id not in docs:
+            return None
+        return SimpleNamespace(
+            instance_id=instance_id,
+            kind="custom-mcp",
+            has_credentials=True,
+        )
+
+    monkeypatch.setattr(
+        "octop.infra.connectors.service.ConnectorService.decrypt", decrypt
+    )
+    from octop.infra.db.repos.connectors import ConnectorRepo
+
+    monkeypatch.setattr(ConnectorRepo, "get", repo_get)
+    return SimpleNamespace(get=repo_get)
+
+
 @pytest.mark.asyncio
-async def test_custom_mcp_rows_list_the_server_names_inside_the_document(
+async def test_each_connector_row_lists_its_own_server_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        "octop.infra.connectors.service.ConnectorService.get_custom_servers",
-        lambda _self, _user_id: {
-            "wren-summer": {"url": "https://wren.example/mcp"},
-            "summer-laac": {"display_name": "Summer LAAC"},
+    """Two connectors render as two rows, each with only ITS servers."""
+    repo_stub = _patch_docs(
+        monkeypatch,
+        {
+            _DOC_A: {
+                "servers": {
+                    "wren-summer": {"url": "https://wren.example/mcp"},
+                    "summer-laac": {"display_name": "Summer LAAC"},
+                }
+            },
+            _DOC_B: {"servers": {"solo": {"url": "https://solo.example/mcp"}}},
         },
     )
     server = _server(
         [
-            _row("01M52GPZ7BYF6Z6B0J638SJ5C0"),
+            _row(_DOC_A, name="WeKnora 零售变革问答专家"),
+            _row(_DOC_B, name="Wren Summer"),
             _row("01M4HQ1M5K125VY381FC4ZXMSN", name="WeKnora 知识库", kind="weknora"),
-        ]
+        ],
+        connector_repo=repo_stub,
     )
 
     rows = await list_tenant_resource_acl(
@@ -103,23 +150,23 @@ async def test_custom_mcp_rows_list_the_server_names_inside_the_document(
         server=server,
     )
 
-    assert rows[0]["name"] == "自定义 MCP"  # stored name untouched
+    assert rows[0]["name"] == "WeKnora 零售变革问答专家"
     assert rows[0]["server_names"] == ["Summer LAAC", "wren-summer"]
+    assert rows[1]["name"] == "Wren Summer"
+    assert rows[1]["server_names"] == ["solo"]
     # Built-in rows have nothing to disambiguate — no empty key emitted.
-    assert "server_names" not in rows[1]
+    assert "server_names" not in rows[2]
 
 
 @pytest.mark.asyncio
 async def test_unreadable_document_degrades_to_no_names_instead_of_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _boom(_self: Any, _user_id: int) -> dict[str, Any]:
-        raise RuntimeError("credential blob (rotated key)")
-
-    monkeypatch.setattr(
-        "octop.infra.connectors.service.ConnectorService.get_custom_servers", _boom
+    repo_stub = _patch_docs(
+        monkeypatch,
+        {_DOC_A: RuntimeError("credential blob (rotated key)")},
     )
-    server = _server([_row("01M52GPZ7BYF6Z6B0J638SJ5C0")])
+    server = _server([_row(_DOC_A)], connector_repo=repo_stub)
 
     rows = await list_tenant_resource_acl(
         org_id=ORG,
@@ -137,11 +184,8 @@ async def test_connectors_query_selects_kind_and_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without these two columns the projection cannot be driven at all."""
-    monkeypatch.setattr(
-        "octop.infra.connectors.service.ConnectorService.get_custom_servers",
-        lambda _self, _user_id: {"wren-summer": {}},
-    )
-    server = _server([_row("01M52GPZ7BYF6Z6B0J638SJ5C0")])
+    repo_stub = _patch_docs(monkeypatch, {_DOC_A: {"servers": {"wren-summer": {}}}})
+    server = _server([_row(_DOC_A)], connector_repo=repo_stub)
 
     await list_tenant_resource_acl(
         org_id=ORG,

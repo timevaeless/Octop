@@ -7,6 +7,7 @@ wiring in ``custom_harness_configs``.
 
 from __future__ import annotations
 
+import itertools
 import time
 from pathlib import Path
 
@@ -271,8 +272,11 @@ def test_mint_uses_env_ttl(monkeypatch):
 # ------------------------------------------------------------ service wiring
 
 
+_PUT_SEQ = itertools.count(1)
+
+
 def _put_servers(svc: ConnectorService, uid: int, servers: dict) -> None:
-    svc.put_custom_servers(uid, servers)
+    svc.create_custom_connector(uid, f"conn-{next(_PUT_SEQ)}", servers)
 
 
 def test_service_injects_only_for_flagged_server(db: SqlitePool, svc: ConnectorService):

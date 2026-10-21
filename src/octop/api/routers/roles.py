@@ -15,7 +15,6 @@ from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from octop.api.deps import current_user, get_server, require_admin
-from octop.infra.connectors.custom_mcp import resolve_acl_connector_parent
 
 router = APIRouter()
 
@@ -913,8 +912,11 @@ async def set_connector_acl(
     row = repo.get(instance_id)
     if row is None:
         # Expanded custom-MCP children list under synthetic ids while the ACL
-        # lives on the parent custom-mcp row — resolve before giving up.
-        row = resolve_acl_connector_parent(repo, instance_id, user.id)
+        # lives on the parent custom-mcp row — resolve before giving up
+        # (T4: own children resolve by scanning the caller's documents).
+        from octop.infra.connectors.custom_multi import resolve_acl_parent, svc_for
+
+        row = resolve_acl_parent(svc_for(server), instance_id, user.id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"connector {instance_id!r} not found")
     if set_org:

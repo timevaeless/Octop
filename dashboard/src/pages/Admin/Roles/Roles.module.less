@@ -113,11 +113,11 @@
   color: var(--fn-text-tertiary);
 }
 
-/* Server keys inside a custom-MCP document. Every such document stores the
-   same 「自定义 MCP」 as its display name, so these keys are the only
-   recognisable label — clipped rather than wrapped to keep the row height. */
-.serverNames {
-  max-width: 260px;
+/* Server keys inside a custom-MCP connector row — clipped to ONE line no
+   matter how many servers the connector holds; the Tooltip carries the full
+   list. Without the clip, a 20-server connector wraps into a tall row. */
+.serverCaption {
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

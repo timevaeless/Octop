@@ -152,6 +152,20 @@ class ConnectorRepo:
             ).fetchone()
         return ConnectorRow.from_row(r) if r else None
 
+    def list_by_user_kind(self, user_id: int, kind: str) -> list[ConnectorRow]:
+        """ALL rows of (user, kind) — the multi-instance custom-MCP base.
+
+        Stable order (created_at, instance_id) keeps merged reads and label
+        projections deterministic regardless of row insertion timing.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM connectors WHERE user_id = ? AND kind = ? "
+                "ORDER BY created_at, instance_id",
+                (user_id, kind),
+            ).fetchall()
+        return map_rows(rows, ConnectorRow)
+
     def list_by_user(self, user_id: int) -> list[ConnectorRow]:
         with self._db.connect() as conn:
             rows = conn.execute(

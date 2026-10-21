@@ -42,11 +42,7 @@ from pydantic import BaseModel, Field
 
 from octop.api.deps import current_user, get_server
 from octop.api.routers.org_members import _require_org_admin
-from octop.infra.connectors.custom_mcp import (
-    is_custom_mcp_kind,
-    resolve_acl_connector_parent,
-    server_display_name,
-)
+from octop.infra.connectors.custom_mcp import is_custom_mcp_kind
 from octop.infra.db.repos.tenant_roles import TenantRoleRepo, tenant_role_repo_for
 
 logger = logging.getLogger(__name__)
@@ -381,7 +377,8 @@ async def list_tenant_resource_acl(
             # exceed the referenced service's roles — read-only advisory.
             row["default_mcp_servers"] = _parse_roles(r["default_mcp_servers"])
         elif kind == "connectors" and is_custom_mcp_kind(str(r["kind"])):
-            row["server_names"] = _custom_server_labels(server, r["user_id"])
+            # Labels of THIS document only — one ACL row per connector (T4).
+            row["server_names"] = _custom_server_labels(server, str(r["id"]))
         out.append(row)
     return out
 
@@ -411,34 +408,28 @@ def _acl_connector_service(server: Any) -> Any:
     )
 
 
-def _custom_server_labels(server: Any, owner_user_id: Any) -> list[str]:
-    """Server names inside one manual custom-MCP document — labels only.
+def _custom_server_labels(server: Any, instance_id: str) -> list[str]:
+    """Server display names of ONE custom-MCP document — labels only.
 
-    A ``custom-mcp`` row is the owner's *whole* document and its
-    ``display_name`` is the same 「自定义 MCP」 for every document, so the name
-    column cannot tell two rows apart; what an operator actually recognizes is
-    the server key inside (``wren-summer``). Projected here for the ACL tab.
-
-    Name-only by construction: the decrypted specs also carry urls/headers and
-    credentials, none of which leave this function. An unreadable document
-    (rotated key, corrupt blob) or an incomplete service wiring degrades to no
-    labels instead of failing the page — the row then renders exactly as it did
-    before this projection existed.
+    One connector = one document = one resource-ACL row (T4 multi-doc); the
+    row's ``display_name`` is the user-chosen connector name and the labels
+    below are the servers inside it. Name-only by construction: the decrypted
+    specs also carry urls/headers and credentials, none of which leave this
+    function. An unreadable document (rotated key, corrupt blob) or an
+    incomplete service wiring degrades to no labels instead of failing the
+    page — the row then renders exactly as it did before this projection
+    existed.
     """
     try:
+        from octop.infra.connectors.custom_multi import connector_server_labels
+
         conn_svc = _acl_connector_service(server)
-        servers = conn_svc.get_custom_servers(int(owner_user_id))
+        return connector_server_labels(conn_svc, instance_id)
     except Exception:
         logger.exception(
-            "resource-acl: custom MCP document unreadable (owner=%s)", owner_user_id
+            "resource-acl: custom MCP document unreadable (instance=%s)", instance_id
         )
         return []
-    labels = {
-        server_display_name(str(name), spec)
-        for name, spec in servers.items()
-        if isinstance(spec, dict)
-    }
-    return sorted(labels, key=str.casefold)
 
 
 def _load_acl_row(
@@ -459,8 +450,11 @@ def _load_acl_row(
         rid = resource_id
         if row is None:
             # Custom-MCP children live under synthetic ids; the ACL row is
-            # the parent custom-mcp connector.
-            parent = resolve_acl_connector_parent(repo, resource_id, user.id)
+            # the parent custom-mcp connector (T4: own children resolve by
+            # scanning the caller's documents, not a singleton guess).
+            from octop.infra.connectors.custom_multi import resolve_acl_parent
+
+            parent = resolve_acl_parent(_acl_connector_service(server), resource_id, user.id)
             if parent is not None:
                 row = parent
                 rid = parent.instance_id

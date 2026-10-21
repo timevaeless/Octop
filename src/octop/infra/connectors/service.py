@@ -11,27 +11,18 @@ from weakref import WeakKeyDictionary
 
 from octop.config import OctopConfig
 from octop.infra.connectors import qcc
-from octop.infra.connectors.builder import build_http_mcp_spec, mcp_server_name, new_internal_token
+from octop.infra.connectors.builder import build_http_mcp_spec, new_internal_token
 from octop.infra.connectors.catalog import get_catalog_entry, uses_internal_http_mcp
 from octop.infra.connectors.crypto import decrypt_credentials, encrypt_credentials
 from octop.infra.connectors.custom_mcp import (
-    CUSTOM_MCP_DISPLAY_NAME,
     CUSTOM_MCP_KIND,
-    build_oauth_storage,
     enabled_harness_configs,
     expand_custom_instances,
     extract_servers,
     is_custom_mcp_kind,
-    mark_oauth_reauth_required,
-    merge_preserved_oauth,
-    oauth_configured,
-    oauth_tokens_from_spec,
     redact_servers_for_api,
     server_enabled,
-    set_oauth_required_in_spec,
     shared_mcp_server_name,
-    validate_servers_map,
-    wrap_servers,
 )
 from octop.infra.connectors.default_open import merge_mcp_servers_with_defaults, read_default_open
 from octop.infra.connectors.gateway import agently_auth
@@ -304,65 +295,56 @@ class ConnectorService:
         return names
 
     def get_custom_servers(self, user_id: int) -> dict[str, Any]:
-        row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
-        if row is None or not row.has_credentials:
-            return {}
-        return extract_servers(self.decrypt(row.instance_id))
+        """Merged view of ALL the user's custom-MCP connectors (T4 multi-doc).
+
+        Delegation hook: implementation in octop.infra.connectors.custom_multi
+        (one connector = one document; reads merge by server name). Deleting
+        that module and restoring the body below restores single-document
+        behaviour verbatim.
+        """
+        from octop.infra.connectors.custom_multi import merged_custom_servers
+
+        return merged_custom_servers(self, user_id)
 
     def get_custom_servers_for_api(self, user_id: int) -> dict[str, Any]:
         return redact_servers_for_api(self.get_custom_servers(user_id))
 
-    def put_custom_servers(
-        self, user_id: int, servers: dict[str, Any], org_id: str | None = None
-    ) -> dict[str, Any]:
-        existing = self.get_custom_servers(user_id)
-        merged = merge_preserved_oauth(servers, existing)
-        return self._save_custom_servers(user_id, merged, org_id=org_id)
+    # ---- multi-instance connector CRUD (T4: bodies in custom_multi) ----
 
-    def _save_custom_servers(
-        self, user_id: int, servers: dict[str, Any], org_id: str | None = None
+    def list_custom_connectors(self, user_id: int) -> list[dict[str, Any]]:
+        from octop.infra.connectors.custom_multi import list_connectors_for_api
+
+        return list_connectors_for_api(self, user_id)
+
+    def create_custom_connector(
+        self, user_id: int, name: str, servers: Any, org_id: str | None = None
     ) -> dict[str, Any]:
-        normalized = validate_servers_map(
-            servers,
-            reserved_names=self.reserved_builtin_mcp_names(user_id),
-        )
-        display_names: set[str] = set()
-        for name, spec in normalized.items():
-            display_name = (
-                str(spec.get("display_name") or "").strip() if isinstance(spec, dict) else ""
-            ) or name
-            if display_name in display_names or self._repo.name_exists(user_id, display_name):
-                raise ConnectorNameTakenError(display_name)
-            display_names.add(display_name)
-        row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
-        if not normalized:
-            if row is not None:
-                self._repo.delete(row.instance_id)
-            return {}
-        if row is None:
-            instance_id = new_ulid()
-            self._repo.create(
-                instance_id=instance_id,
-                user_id=user_id,
-                kind=CUSTOM_MCP_KIND,
-                display_name=CUSTOM_MCP_DISPLAY_NAME,
-                mcp_server_name=mcp_server_name(CUSTOM_MCP_KIND, instance_id),
-                org_id=org_id,
-            )
-        else:
-            instance_id = row.instance_id
-            # A pre-018 parent row carries org_id NULL (= platform-shared).
-            # The owner re-saving their servers is the moment to adopt the
-            # tenant: otherwise the row stays orgless forever (the backfill
-            # in _ensure_resource_acl_schema covers it only when the owner
-            # has a default org; this catches the general path too).
-            if row.org_id is None and org_id is not None:
-                self._repo.update_metadata(row.instance_id, org_id=org_id)
-        self.encrypt_and_store(
-            instance_id=instance_id,
-            payload=wrap_servers(normalized),
-        )
-        return normalized
+        from octop.infra.connectors.custom_multi import create_connector
+
+        return create_connector(self, user_id, name, servers, org_id=org_id)
+
+    def save_custom_connector(
+        self,
+        user_id: int,
+        instance_id: str,
+        servers: Any,
+        org_id: str | None = None,
+    ) -> dict[str, Any]:
+        from octop.infra.connectors.custom_multi import save_connector_servers
+
+        return save_connector_servers(self, user_id, instance_id, servers, org_id=org_id)
+
+    def rename_custom_connector(
+        self, user_id: int, instance_id: str, name: str
+    ) -> dict[str, Any]:
+        from octop.infra.connectors.custom_multi import rename_connector
+
+        return rename_connector(self, user_id, instance_id, name)
+
+    def delete_custom_connector(self, user_id: int, instance_id: str) -> dict[str, Any]:
+        from octop.infra.connectors.custom_multi import delete_connector
+
+        return delete_connector(self, user_id, instance_id)
 
     def apply_custom_server_oauth(
         self,
@@ -373,59 +355,18 @@ class ConnectorService:
         issuer: str,
         resource: str | None,
     ) -> dict[str, Any]:
-        servers = dict(self.get_custom_servers(user_id))
-        if server_name not in servers:
-            raise KeyError(server_name)
-        access = str(tokens.get("access_token") or "").strip()
-        if not access:
-            raise ValueError("missing access_token")
-        spec = dict(servers[server_name])
-        spec["oauth"] = build_oauth_storage(tokens, issuer=issuer, resource=resource)
-        spec = set_oauth_required_in_spec(spec, required=False)
-        servers[server_name] = spec
-        return self._save_custom_servers(user_id, servers)
+        """OAuth grant persists to the server's OWN document (T4 multi-doc)."""
+        from octop.infra.connectors.custom_multi import apply_server_oauth
+
+        return apply_server_oauth(
+            self, user_id, server_name, tokens, issuer=issuer, resource=resource
+        )
 
     async def ensure_fresh_custom_servers(self, user_id: int) -> dict[str, Any]:
-        servers = dict(self.get_custom_servers(user_id))
-        changed = False
-        now = int(time.time())
-        for name, raw in list(servers.items()):
-            if not isinstance(raw, dict):
-                continue
-            oauth = oauth_tokens_from_spec(raw)
-            if not oauth_configured(raw):
-                continue
-            expires_at_raw = oauth.get("expires_at")
-            expires_at = int(expires_at_raw) if expires_at_raw is not None else None
-            refresh = str(oauth.get("refresh_token") or "").strip()
-            if expires_at is not None and expires_at <= now and not refresh:
-                servers[name] = mark_oauth_reauth_required(dict(raw))
-                changed = True
-                continue
-            if not refresh:
-                continue
-            if expires_at is not None and expires_at > now + _OAUTH_REFRESH_SKEW_SEC:
-                continue
-            try:
-                refreshed = await refresh_custom_mcp_oauth(oauth)
-            except Exception:
-                logger.warning(
-                    "custom MCP oauth refresh failed for %r (user_id=%s)",
-                    name,
-                    user_id,
-                    exc_info=True,
-                )
-                if expires_at is not None and expires_at <= now:
-                    servers[name] = mark_oauth_reauth_required(dict(raw))
-                    changed = True
-                continue
-            spec = dict(raw)
-            spec["oauth"] = refreshed
-            servers[name] = spec
-            changed = True
-        if not changed:
-            return servers
-        return self._save_custom_servers(user_id, servers)
+        """OAuth refresh pass — per-document writes (T4 multi-doc hook)."""
+        from octop.infra.connectors.custom_multi import ensure_fresh
+
+        return await ensure_fresh(self, user_id)
 
     def patch_custom_server_enabled(
         self,
@@ -445,26 +386,17 @@ class ConnectorService:
         default_open: bool | None = None,
         shared: bool | None = None,
     ) -> dict[str, Any]:
-        servers = dict(self.get_custom_servers(user_id))
-        if server_name not in servers:
-            raise KeyError(server_name)
-        spec = dict(servers[server_name])
-        if enabled is not None:
-            spec["enabled"] = enabled
-            if not enabled:
-                spec.pop("default_open", None)
-        if default_open is not None:
-            if default_open:
-                spec["default_open"] = True
-            else:
-                spec.pop("default_open", None)
-        if shared is not None:
-            if shared:
-                spec["shared"] = True
-            else:
-                spec.pop("shared", None)
-        servers[server_name] = spec
-        return self.put_custom_servers(user_id, servers)
+        """One server's flags, written to its OWN document (T4 multi-doc)."""
+        from octop.infra.connectors.custom_multi import patch_server
+
+        return patch_server(
+            self,
+            user_id,
+            server_name,
+            enabled=enabled,
+            default_open=default_open,
+            shared=shared,
+        )
 
     def note_custom_server_oauth_required(
         self,
@@ -473,12 +405,9 @@ class ConnectorService:
         *,
         required: bool,
     ) -> dict[str, Any]:
-        servers = dict(self.get_custom_servers(user_id))
-        if server_name not in servers:
-            raise KeyError(server_name)
-        spec = dict(servers[server_name])
-        servers[server_name] = set_oauth_required_in_spec(spec, required=required)
-        return self._save_custom_servers(user_id, servers)
+        from octop.infra.connectors.custom_multi import note_oauth_required
+
+        return note_oauth_required(self, user_id, server_name, required=required)
 
     def patch_custom_server_default_open(
         self,
@@ -496,7 +425,6 @@ class ConnectorService:
         instances; ``None`` keeps the legacy unfiltered behavior.
         """
         out: list[dict[str, Any]] = []
-        custom_row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
         for inst in self._repo.list_visible(
             user_id,
             org_id=authz.org_id if authz is not None else None,
@@ -526,13 +454,10 @@ class ConnectorService:
                     "updated_at": inst.updated_at,
                 }
             )
-        if custom_row is not None and custom_row.has_credentials:
-            out.extend(
-                expand_custom_instances(
-                    parent=custom_row,
-                    servers=extract_servers(self.decrypt(custom_row.instance_id)),
-                )
-            )
+        # Own custom connectors: one document per connector (T4 multi-doc).
+        from octop.infra.connectors.custom_multi import expand_own
+
+        out.extend(expand_own(self, user_id))
         for parent in self._repo.list_by_kind(CUSTOM_MCP_KIND):
             if parent.user_id == user_id or not parent.has_credentials:
                 continue

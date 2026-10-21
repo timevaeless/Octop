@@ -480,11 +480,11 @@ export default function ResourceAclTab({
                   title: t("adminRoles.acl.resource"),
                   dataIndex: "name",
                   render: (name: string, record: ResourceAclRow) => {
-                    // Custom-MCP rows are whole documents whose stored name is
-                    // the same 「自定义 MCP」 for every one of them. The server
-                    // keys inside are the only thing that says which connector
-                    // this row is, so they lead and the document name becomes
-                    // the caption. Roles still apply to the whole document.
+                    // T4 multi-doc: a custom-MCP row IS one connector — its
+                    // stored name is the user-chosen connector name and it
+                    // leads. The server keys inside are the caption (what the
+                    // connector contains). Roles still apply to the whole
+                    // document.
                     const serverNames = record.server_names ?? [];
                     if (serverNames.length === 0) {
                       return (
@@ -498,14 +498,12 @@ export default function ResourceAclTab({
                     }
                     return (
                       <div className={styles.cellStack}>
+                        <span>{name}</span>
                         <Tooltip title={serverNames.join(" · ")}>
-                          <span className={styles.serverNames}>
+                          <span
+                            className={`${styles.cellSecondary} ${styles.serverCaption}`}
+                          >
                             {serverNames.join(" · ")}
-                          </span>
-                        </Tooltip>
-                        <Tooltip title={record.id}>
-                          <span className={styles.cellSecondary}>
-                            {`${name} · ${record.id}`}
                           </span>
                         </Tooltip>
                       </div>
