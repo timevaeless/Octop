@@ -43,9 +43,10 @@ export default function ExpertAgentAvatar({
 }: ExpertAgentAvatarProps) {
   const accent = muted ? "#94a3b8" : color || "#6366f1";
   const photo = Boolean(iconUrl?.trim());
+  // Fork: 默认奇宝头像改为位图回退，占容器比例从 0.55 提到 0.8
   const inner = photo
     ? size
-    : iconSize ?? Math.max(12, Math.round(size * 0.55));
+    : iconSize ?? Math.max(14, Math.round(size * 0.8));
 
   return (
     <span

@@ -26,7 +26,7 @@ import {
   parseWorkflowFrontmatterMeta,
   splitMarkdownFrontmatter,
 } from "../../../utils/markdown";
-import { iconForName } from "./iconForName";
+import { ExpertIcon, iconForName } from "./iconForName";
 import styles from "../index.module.less";
 
 interface ExpertMarketTabProps {
@@ -288,15 +288,12 @@ export default function ExpertMarketTab({
                       background: `${accent}18`,
                     }}
                   >
-                    {expert.icon_url ? (
-                      <img
-                        src={expert.icon_url}
-                        alt=""
-                        className={styles.marketIconImg}
-                      />
-                    ) : (
-                      iconForName(expert.icon_name || "zap", 20)
-                    )}
+                    {/* Fork: 统一走 ExpertIcon，无 icon_url 时回退奇宝默认头像 */}
+                    <ExpertIcon
+                      iconUrl={expert.icon_url}
+                      iconName={expert.icon_name}
+                      size={expert.icon_url ? 34 : 30}
+                    />
                   </div>
                   <div className={styles.agentCardTitleBlock}>
                     <div className={styles.agentCardName}>{label}</div>

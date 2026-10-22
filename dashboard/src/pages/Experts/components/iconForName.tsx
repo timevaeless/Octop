@@ -60,6 +60,7 @@ import {
 import { useAuthImageSrc } from "../../../hooks/useAuthImageSrc";
 import { needsAuthBlobFetch } from "../../../utils/toolMediaBlocks";
 import { DEPLOY_PREFIX } from "../../../api/config";
+import qibaoDefaultAvatar from "../../../assets/experts/qibao-default.png";
 
 const iconMap: Record<string, (size: number) => ReactNode> = {
   sparkles: (size) => <Sparkles size={size} />,
@@ -142,7 +143,22 @@ export function ExpertIcon({
       />
     );
   }
-  return iconForName(iconName, size);
+  // Fork: 默认专家头像 = 奇宝吉祥物（原为 Lucide iconForName 回退）。
+  // 透明底 PNG，可直接叠在卡片/tinted 圆底上。
+  return (
+    <img
+      src={qibaoDefaultAvatar}
+      alt=""
+      className={className}
+      style={{
+        width: size,
+        height: size,
+        objectFit: "contain",
+        display: "block",
+        borderRadius: "inherit",
+      }}
+    />
+  );
 }
 
 /**

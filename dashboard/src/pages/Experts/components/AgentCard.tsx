@@ -306,7 +306,7 @@ export const AgentCard = memo(function AgentCard({
             <ExpertIcon
               iconUrl={iconUrl ?? agent.icon_url}
               iconName={iconName ?? agent.icon_name}
-              size={iconUrl ?? agent.icon_url ? 42 : 22}
+              size={iconUrl ?? agent.icon_url ? 42 : 34}
             />
           </div>
 
