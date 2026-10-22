@@ -318,9 +318,13 @@ export function TableEmpty({
 
 /**
  * Vertical space a table reserves for its own chrome: the fixed header row
- * plus the pagination strip underneath the rows.
+ * (middle size ≈ 47px) plus the pagination strip underneath the rows. The
+ * strip itself is 32px and the `.tableArea` rule below clamps its margins
+ * to `8px 0 0` — the antd default `margin: 16px 0` spends 16px of dead
+ * space below the strip that `overflow: hidden` would simply clip, dragging
+ * the pagination half out of view. 47 + 8 + 32 = 87; 92 leaves ~5px slack.
  */
-const TABLE_CHROME = 80;
+const TABLE_CHROME = 92;
 
 export interface TableArea {
   /** Attach to the flex wrapper that hosts the ``<Table>``. */

@@ -55,6 +55,16 @@
   :global(.ant-table-body) {
     overflow-y: auto !important;
   }
+
+  /* antd gives the pagination strip `margin: 16px 0`. The bottom 16px is
+     dead space inside this `overflow: hidden` box — TABLE_CHROME cannot
+     afford it, and paying it clips the strip's bottom half out of view.
+     Clamp to a single 8px top margin (kept in sync with TABLE_CHROME in
+     shared.tsx). */
+  :global(.octop-table-pagination),
+  :global(.ant-table-pagination) {
+    margin: 8px 0 0 !important;
+  }
 }
 
 /* Same forced-scrollbar artifact applies to the fixed-header table inside the
